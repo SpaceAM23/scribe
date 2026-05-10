@@ -13,6 +13,17 @@
 set -euo pipefail
 
 # =============================================================================
+# 0. ERROR HANDLER
+# =============================================================================
+
+# Source the error handler for structured error logging
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$SCRIPT_DIR/error-handler.sh" ]; then
+  # DATA_DIR isn't set yet — error-handler will use the default until we override
+  source "$SCRIPT_DIR/error-handler.sh"
+fi
+
+# =============================================================================
 # 1. RESOLVE DATA DIRECTORY
 # =============================================================================
 
@@ -54,6 +65,8 @@ resolve_data_path() {
 }
 
 DATA_DIR="$(resolve_data_path)"
+export DATA_DIR
+ERRORS_LOG="$DATA_DIR/errors.jsonl"
 
 # Validate data directory exists (or create it)
 if [ ! -d "$DATA_DIR" ]; then
@@ -372,6 +385,9 @@ if [ "$SUPABASE_ENABLED" = "true" ] && [ -n "$PSQL_BIN" ] && [ -n "$SUPABASE_DB_
       TARGETS_WRITTEN="${TARGETS_WRITTEN:+$TARGETS_WRITTEN+}supabase"
     else
       echo "WARN: Supabase insert failed — entry saved to other targets." >&2
+      if type scribe_log_error &>/dev/null; then
+        scribe_log_error "writer" "io" "Supabase insert failed" "entry_id=$SHORT_ID, project=$PROJECT, type=$TYPE"
+      fi
     fi
   fi
 fi

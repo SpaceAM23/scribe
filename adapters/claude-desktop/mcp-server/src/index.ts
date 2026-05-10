@@ -138,6 +138,55 @@ function nowISO(): string {
 }
 
 // ---------------------------------------------------------------------------
+// 2b. Error Logging
+// ---------------------------------------------------------------------------
+
+function logError(
+  component: string,
+  errorType: string,
+  message: string,
+  context?: string,
+  stack?: string,
+): void {
+  const versionFile = path.resolve(__dirname, "..", "..", "..", "..", "VERSION");
+  let scribeVersion = "unknown";
+  try {
+    if (fs.existsSync(versionFile)) {
+      scribeVersion = fs.readFileSync(versionFile, "utf-8").trim();
+    }
+  } catch { /* ignore */ }
+
+  const config = readJsonFile<Record<string, unknown>>(dataPath("config.json"), {});
+  const index = readJsonFile<Record<string, unknown>>(dataPath("index.json"), {});
+
+  const entry = {
+    error_id: uuidv4(),
+    timestamp: nowISO(),
+    scribe_version: scribeVersion,
+    component,
+    error_type: errorType,
+    message,
+    context: context || "",
+    stack: stack || "",
+    platform: "claude-desktop",
+    system: {
+      os: os.platform(),
+      os_version: os.release(),
+      node: process.version,
+      config_exists: Object.keys(config).length > 0,
+      total_entries: (index as { total_entries?: number }).total_entries ?? "unknown",
+    },
+    submitted: false,
+  };
+
+  try {
+    appendJsonlLine(dataPath("errors.jsonl"), entry);
+  } catch {
+    console.error("Failed to write to error log:", message);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // 3. Schema Types
 // ---------------------------------------------------------------------------
 
@@ -776,6 +825,7 @@ server.tool(
       return { content: [{ type: "text" as const, text: receipt }] };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to write entry: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to write entry: ${message}` }], isError: true };
     }
   }
@@ -852,6 +902,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to list entries: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to list entries: ${message}` }], isError: true };
     }
   }
@@ -923,6 +974,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to get status: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to get status: ${message}` }], isError: true };
     }
   }
@@ -954,6 +1006,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to get entry: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to get entry: ${message}` }], isError: true };
     }
   }
@@ -1008,6 +1061,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to edit entry: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to edit entry: ${message}` }], isError: true };
     }
   }
@@ -1066,6 +1120,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to delete entry: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to delete entry: ${message}` }], isError: true };
     }
   }
@@ -1154,6 +1209,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to generate packet: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to generate packet: ${message}` }], isError: true };
     }
   }
@@ -1223,6 +1279,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to read inbox: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to read inbox: ${message}` }], isError: true };
     }
   }
@@ -1264,6 +1321,7 @@ server.tool(
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      logError("mcp-server", "runtime", `Failed to accept packet: ${message}`, undefined, err instanceof Error ? err.stack : undefined);
       return { content: [{ type: "text" as const, text: `Failed to accept packet: ${message}` }], isError: true };
     }
   }
