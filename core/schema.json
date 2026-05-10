@@ -1,0 +1,202 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scribe-entry-v1",
+  "title": "Scribe Journal Entry",
+  "description": "Schema for Scribe session journal entries. Additive-only: new fields may be added, existing fields are never removed or renamed.",
+  "schema_version": 1,
+  "type": "object",
+  "required": ["id", "timestamp", "session_id", "user_id", "project", "type", "title", "summary"],
+  "properties": {
+    "id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "UUID v4 unique identifier"
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO-8601 timestamp with timezone"
+    },
+    "session_id": {
+      "type": "string",
+      "description": "Conversation ID or session label"
+    },
+    "user_id": {
+      "type": "string",
+      "description": "Owner identifier — links entries to the user who created them"
+    },
+    "project": {
+      "type": "string",
+      "description": "Which project this entry belongs to — validated against user's config, not a hardcoded enum"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "session_open",
+        "feature_shipped",
+        "bug_fixed",
+        "decision_made",
+        "learning",
+        "correction",
+        "process_created",
+        "tool_discovered",
+        "feedback_received",
+        "milestone",
+        "reflection"
+      ],
+      "description": "Category of journal entry. Core types listed; users may extend via config."
+    },
+    "title": {
+      "type": "string",
+      "maxLength": 120,
+      "description": "Short headline — what happened"
+    },
+    "summary": {
+      "type": "string",
+      "description": "Detailed narrative — no character limit. Write as much detail as the event deserves."
+    },
+    "decisions": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Decisions made: the choice, alternatives considered, reasoning, and constraints."
+    },
+    "learnings": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Things genuinely learned — the setup, the surprise, the principle, the application."
+    },
+    "corrections": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Mistakes made: observable symptom, root cause, fix applied, prevention rule, recurrence flag."
+    },
+    "metrics": {
+      "type": "object",
+      "properties": {
+        "files_changed": { "type": "integer", "minimum": 0 },
+        "lines_added": { "type": "integer", "minimum": 0 },
+        "lines_removed": { "type": "integer", "minimum": 0 },
+        "duration_minutes": { "type": "integer", "minimum": 0 },
+        "agents_dispatched": { "type": "integer", "minimum": 0 },
+        "version_shipped": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "connections": {
+      "type": "object",
+      "properties": {
+        "builds_on": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "IDs of related earlier entries"
+        },
+        "related_projects": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Other projects this connects to"
+        },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Searchable tags — lowercase, specific"
+        }
+      },
+      "additionalProperties": false
+    },
+    "growth": {
+      "type": "object",
+      "properties": {
+        "skill_area": {
+          "type": "string",
+          "description": "Domain of growth — user-defined, common values: architecture, frontend, backend, data, ops, design, leadership"
+        },
+        "complexity": {
+          "type": "string",
+          "enum": ["routine", "moderate", "challenging", "breakthrough"],
+          "description": "Honest complexity assessment. routine = done this before. breakthrough = genuinely new territory."
+        },
+        "autonomy": {
+          "type": "string",
+          "enum": ["guided", "collaborative", "independent"],
+          "description": "Who drove the decisions. guided = AI-led. collaborative = real back-and-forth. independent = user drove."
+        },
+        "notes": {
+          "type": "string",
+          "description": "What this session taught about development — specific, not generic."
+        }
+      },
+      "additionalProperties": false
+    },
+    "behavioral": {
+      "type": "object",
+      "description": "Opt-in behavioral observations. Only populated when behavioral_tracking is enabled in config.",
+      "properties": {
+        "drive_state": {
+          "type": "string",
+          "enum": ["building", "firefighting", "avoiding", "maintaining", "exploring", "closing"],
+          "description": "What mode the user is operating in."
+        },
+        "energy": {
+          "type": "string",
+          "enum": ["high", "steady", "low", "scattered"],
+          "description": "Observable energy level."
+        },
+        "triggers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What prompted the current behavior — be specific."
+        },
+        "avoidance_signals": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Tasks mentioned but deferred."
+        },
+        "language_markers": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Notable phrases that reveal mindset."
+        },
+        "cognitive_load": {
+          "type": "string",
+          "enum": ["focused", "moderate", "overloaded"],
+          "description": "How many threads the user is juggling."
+        },
+        "pattern_flags": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Recurring behavioral patterns observed."
+        },
+        "notes": {
+          "type": "string",
+          "description": "Free-form behavioral observation — what a psychologist would note."
+        }
+      },
+      "additionalProperties": false
+    },
+    "learning_story": {
+      "type": "object",
+      "description": "Full journey narrative for Scribe-to-Scribe packet sharing. Captures attempts, thinking, and outcomes.",
+      "properties": {
+        "attempts": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "What was tried, in order, including failures."
+        },
+        "thinking": {
+          "type": "string",
+          "description": "The reasoning that led to the eventual solution."
+        },
+        "outcome": {
+          "type": "string",
+          "description": "Measured result, not claimed success."
+        },
+        "transferable_lesson": {
+          "type": "string",
+          "description": "What someone else can apply without repeating the full journey."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

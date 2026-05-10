@@ -1,0 +1,22 @@
+{
+  "name": "@rocksteady/scribe-mcp",
+  "version": "0.1.0",
+  "description": "Scribe MCP server for Claude Desktop — silent AI session journal",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "uuid": "^11.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.17",
+    "@types/uuid": "^10.0.0",
+    "typescript": "^5.8.3"
+  },
+  "author": "Apollo Mondesir / Rocksteady Consulting",
+  "license": "MIT"
+}

@@ -1,0 +1,179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "scribe-packet-v1",
+  "title": "Scribe-to-Scribe Packet",
+  "description": "A trusted handshake between two Scribe users. Carries relational context, project decisions, learning stories, and collaboration guidance. Never carries behavioral, growth, or encrypted data.",
+  "type": "object",
+  "required": ["scribe_packet", "generated", "packet_id", "sender", "project_context"],
+  "properties": {
+    "scribe_packet": {
+      "type": "string",
+      "const": "1.0",
+      "description": "Packet format version"
+    },
+    "generated": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When this packet was generated"
+    },
+    "packet_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this packet"
+    },
+    "sender": {
+      "type": "object",
+      "required": ["name", "scribe_id"],
+      "properties": {
+        "name": { "type": "string" },
+        "scribe_id": { "type": "string" },
+        "role": { "type": "string" },
+        "expertise": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "working_style": { "type": "string" },
+        "communication_preferences": {
+          "type": "object",
+          "properties": {
+            "detail_level": { "type": "string" },
+            "decision_style": { "type": "string" },
+            "feedback_style": { "type": "string" },
+            "preferred_format": { "type": "string" }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "receiver": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "known_role": { "type": "string" },
+        "notes": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "relationship": {
+      "type": "object",
+      "properties": {
+        "shared_projects": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "how_we_work_together": { "type": "string" },
+        "trust_level": { "type": "string" },
+        "collaboration_since": { "type": "string" },
+        "interaction_patterns": { "type": "string" },
+        "shared_vocabulary": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "tension_points": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "for_receiver_claude": {
+      "type": "object",
+      "properties": {
+        "integration_guidance": { "type": "string" },
+        "watch_for": { "type": "string" },
+        "how_to_use_this_context": { "type": "string" },
+        "when_to_reference": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "project_context": {
+      "type": "object",
+      "required": ["project"],
+      "properties": {
+        "project": { "type": "string" },
+        "description": { "type": "string" },
+        "current_phase": { "type": "string" },
+        "stack": { "type": "string" },
+        "key_patterns": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "additionalProperties": false
+    },
+    "decisions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string" },
+          "reasoning": { "type": "string" },
+          "affects_receiver": { "type": "string" },
+          "date": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "active_work": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "status"],
+        "properties": {
+          "title": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["not_started", "in_progress", "blocked", "completed"]
+          },
+          "touches": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "blocked_by": { "type": ["string", "null"] },
+          "blocks": { "type": ["string", "null"] },
+          "eta": { "type": ["string", "null"] }
+        },
+        "additionalProperties": false
+      }
+    },
+    "learnings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title"],
+        "properties": {
+          "title": { "type": "string" },
+          "detail": { "type": "string" },
+          "relevance": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "learning_stories": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "attempts", "outcome"],
+        "properties": {
+          "title": { "type": "string" },
+          "attempts": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "thinking": { "type": "string" },
+          "outcome": { "type": "string" },
+          "transferable_lesson": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "working_agreements": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "open_questions": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "additionalProperties": false
+}

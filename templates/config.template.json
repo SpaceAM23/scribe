@@ -1,0 +1,56 @@
+{
+  "scribe_version": "0.1.0",
+  "schema_version": 1,
+  "user_id": "",
+  "user_profile": {
+    "name": "",
+    "role": "",
+    "expertise": [],
+    "working_style": "",
+    "communication_preferences": {
+      "detail_level": "",
+      "decision_style": "",
+      "feedback_style": "",
+      "preferred_format": ""
+    }
+  },
+  "data_path": "~/Desktop/Scribe",
+  "projects": {},
+  "storage": {
+    "local": {
+      "enabled": true
+    },
+    "google_drive": {
+      "enabled": false,
+      "folder_id": null
+    },
+    "supabase": {
+      "enabled": false,
+      "url": null,
+      "anon_key": null,
+      "db_connection": null
+    }
+  },
+  "behavioral_tracking": false,
+  "encryption": {
+    "enabled": false,
+    "algorithm": "AES-256-GCM",
+    "key_derivation": "PBKDF2"
+  },
+  "status_line": {
+    "enabled": true,
+    "metrics": ["session_count", "total_count", "lrn", "cor", "dec", "feat", "bug"]
+  },
+  "transparency": "detailed",
+  "scribe_to_scribe": {
+    "enabled": true,
+    "auto_accept": false,
+    "share_defaults": {
+      "include_role": true,
+      "include_working_style": true,
+      "include_expertise": true,
+      "include_communication_prefs": true
+    }
+  },
+  "skill_integrations": {}
+}

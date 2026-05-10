@@ -21,6 +21,10 @@ Thumbs.db
 node_modules/
 dist/
 *.tgz
+package-lock.json
+
+# Import staging
+import/
 
 # Encryption keys
 *.key
