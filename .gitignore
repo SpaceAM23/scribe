@@ -1,0 +1,27 @@
+# User data (never committed)
+entries/
+journal.jsonl
+index.json
+config.json
+session-counter.json
+revisions/
+backups/
+.scribe-lock
+pointer.json
+
+# Credentials
+.env
+.env.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (MCP server)
+node_modules/
+dist/
+*.tgz
+
+# Encryption keys
+*.key
+recovery-key.txt
