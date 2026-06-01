@@ -1,0 +1,55 @@
+{
+  "_comment": "Scribe normalization map — copy to your data directory as 'normalizations.json' and customize. This file provides deterministic repair for invalid enum values at the writer boundary. On no-match the field is set to 'unspecified', the entry is kept, and the repair is logged to normalizations.jsonl.",
+  "_policy": "On no-match: set the field to 'unspecified', keep the entry, log to normalizations.jsonl. Any stripped nuance belongs in growth.notes.",
+  "complexity": {
+    "high": "challenging",
+    "medium": "moderate",
+    "low": "routine",
+    "easy": "routine",
+    "hard": "challenging",
+    "difficult": "challenging",
+    "simple": "routine",
+    "complex": "challenging",
+    "advanced": "breakthrough",
+    "novel": "breakthrough"
+  },
+  "autonomy": {
+    "self-directed": "independent",
+    "directed": "guided",
+    "mixed": "collaborative",
+    "over-autonomous": "independent",
+    "corrective": "guided",
+    "correction-needed": "guided",
+    "ai-led": "guided",
+    "user-led": "independent",
+    "pair": "collaborative"
+  },
+  "drive_state": {
+    "creating": "building",
+    "shipping": "building",
+    "reacting": "firefighting",
+    "debugging": "firefighting",
+    "delaying": "avoiding",
+    "deferring": "avoiding",
+    "maintaining": "maintaining",
+    "upkeep": "maintaining",
+    "researching": "exploring",
+    "learning": "exploring",
+    "finishing": "closing",
+    "wrapping": "closing"
+  },
+  "energy": {
+    "energized": "high",
+    "focused": "steady",
+    "tired": "low",
+    "distracted": "scattered",
+    "overwhelmed": "scattered",
+    "calm": "steady"
+  },
+  "cognitive_load": {
+    "single-focus": "focused",
+    "multi-project": "moderate",
+    "overwhelmed": "overloaded",
+    "context-switching": "overloaded"
+  }
+}

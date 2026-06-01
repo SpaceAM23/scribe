@@ -6,6 +6,13 @@
 # Fully config-driven — no hardcoded paths, projects, or credentials.
 # Compatible with bash 3.2+ (macOS default).
 #
+# Write-time hardening:
+#   - Enum enforcement reads valid values from the install's schema.json
+#   - Normalization backstop reads its map from DATA_DIR/normalizations.json
+#     (falls back to templates/normalizations.template.json); logs all repairs
+#   - Fault-tolerant Supabase sync-queue: failed writes are queued for reconcile
+#   - Content-hash dedup: prevents duplicate journal entries
+#
 # Usage:
 #   echo '{"id":"...","timestamp":"...",...}' | writer.sh
 #   writer.sh entry.json
@@ -21,6 +28,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 if [ -f "$SCRIPT_DIR/error-handler.sh" ]; then
   # DATA_DIR isn't set yet — error-handler will use the default until we override
   source "$SCRIPT_DIR/error-handler.sh"
+else
+  # Inline fallback error handler
+  scribe_log_error() {
+    local component="${1:-unknown}"
+    local error_type="${2:-unknown}"
+    local message="${3:-No message}"
+    local context="${4:-}"
+    local err_id
+    err_id=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "err-$(date +%s)")
+    local ts
+    ts=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    local os_info
+    os_info="$(uname -s) $(uname -r)"
+    message=$(echo "$message" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+    context=$(echo "$context" | sed 's/\\/\\\\/g; s/"/\\"/g' | tr '\n' ' ')
+    echo "{\"error_id\":\"${err_id}\",\"timestamp\":\"${ts}\",\"component\":\"${component}\",\"error_type\":\"${error_type}\",\"message\":\"${message}\",\"context\":\"${context}\",\"system\":\"${os_info}\",\"submitted\":false}" >> "${ERRORS_LOG:-/tmp/scribe-errors.jsonl}" 2>/dev/null
+  }
 fi
 
 # =============================================================================
@@ -149,33 +173,33 @@ fi
 
 find_psql() {
   # 1. Check PATH
-  if command -v psql &>/dev/null; then
+  if command -v psql >/dev/null 2>&1; then
     command -v psql
     return
   fi
 
   # 2. Common macOS locations
-  local candidates=(
-    "/usr/local/bin/psql"
-    "/opt/homebrew/bin/psql"
-  )
+  local candidates
+  candidates="/usr/local/bin/psql /opt/homebrew/bin/psql"
 
-  # 3. Homebrew libpq (multiple versions)
+  # 3. Homebrew libpq (multiple versions) — evaluated inline for bash 3.2 compat
   local libpq_dir
   for libpq_dir in /usr/local/Cellar/libpq/*/bin/psql /opt/homebrew/Cellar/libpq/*/bin/psql; do
     if [ -x "$libpq_dir" ] 2>/dev/null; then
-      candidates=("$libpq_dir" "${candidates[@]}")
+      candidates="$libpq_dir $candidates"
     fi
   done
 
   # 4. Linux common locations
-  candidates+=(
-    "/usr/bin/psql"
-    "/usr/lib/postgresql/*/bin/psql"
-  )
+  candidates="$candidates /usr/bin/psql"
+  for libpq_dir in /usr/lib/postgresql/*/bin/psql; do
+    if [ -x "$libpq_dir" ] 2>/dev/null; then
+      candidates="$candidates $libpq_dir"
+    fi
+  done
 
-  for candidate in "${candidates[@]}"; do
-    # Handle glob patterns that didn't expand
+  local candidate
+  for candidate in $candidates; do
     if [ -x "$candidate" ] 2>/dev/null; then
       echo "$candidate"
       return
@@ -294,6 +318,172 @@ if [ "$TYPE_IS_CORE" = false ]; then
 fi
 
 # =============================================================================
+# 12b. ENUM ENFORCEMENT — normalize invalid enum values at the writer boundary
+#
+# Reads valid values FROM schema.json (install's core/schema.json, with
+# DATA_DIR/schema.json taking precedence if the user placed one there).
+# Consults normalizations.json for deterministic repair (user's copy at
+# DATA_DIR/normalizations.json; falls back to the install's
+# templates/normalizations.template.json).
+# On invalid value: map via normalizations, else set "unspecified".
+# Keeps the entry (no data loss). Logs every normalization to normalizations.jsonl.
+# A valid entry passes through UNCHANGED.
+# Bash 3.2-compatible: no declare -A; normalization lookup uses jq.
+# =============================================================================
+
+# Resolve schema.json: user's DATA_DIR copy first, then install's core copy
+SCHEMA_FILE="$DATA_DIR/schema.json"
+if [ ! -f "$SCHEMA_FILE" ]; then
+  # Fall back to the schema shipped with this install
+  INSTALL_SCHEMA="$SCRIPT_DIR/schema.json"
+  if [ -f "$INSTALL_SCHEMA" ]; then
+    SCHEMA_FILE="$INSTALL_SCHEMA"
+  else
+    SCHEMA_FILE=""
+  fi
+fi
+
+# Resolve normalizations map: user's DATA_DIR copy first, then install template
+NORM_MAP_FILE="$DATA_DIR/normalizations.json"
+if [ ! -f "$NORM_MAP_FILE" ]; then
+  INSTALL_NORM="$SCRIPT_DIR/../templates/normalizations.template.json"
+  if [ -f "$INSTALL_NORM" ]; then
+    NORM_MAP_FILE="$INSTALL_NORM"
+  else
+    NORM_MAP_FILE=""
+  fi
+fi
+
+NORM_LOG="$DATA_DIR/normalizations.jsonl"
+NORM_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# Helper: look up a value in the normalizations map for a given field key.
+# Prints the mapped canonical value, or empty string if not found.
+# Usage: norm_lookup <field_key> <value>
+# field_key matches the top-level key in normalizations.json (e.g. "complexity")
+norm_lookup() {
+  local field_key="$1"
+  local val="$2"
+  if [ -n "$NORM_MAP_FILE" ] && [ -f "$NORM_MAP_FILE" ]; then
+    jq -r --arg fk "$field_key" --arg v "$val" \
+      '.[$fk][$v] // empty' "$NORM_MAP_FILE" 2>/dev/null || true
+  fi
+}
+
+# Helper: check if a value is in a schema enum array for a given jq path.
+# Prints "true" or "false". Passes through when schema is unavailable.
+# Usage: enum_valid <jq_path_to_enum_array> <value>
+enum_valid() {
+  local jq_path="$1"
+  local val="$2"
+  if [ -z "$SCHEMA_FILE" ] || [ ! -f "$SCHEMA_FILE" ]; then
+    echo "true"   # can't validate without schema — pass through
+    return
+  fi
+  jq -r --arg v "$val" "${jq_path} | if type == \"array\" then map(select(. == \$v)) | length > 0 else true end" "$SCHEMA_FILE" 2>/dev/null || echo "true"
+}
+
+# Helper: append a normalization log entry.
+# Usage: log_norm <field> <from_val> <to_val>
+log_norm() {
+  local field="$1"
+  local from_val="$2"
+  local to_val="$3"
+  printf '{"ts":"%s","field":"%s","from":"%s","to":"%s","entry_id":"%s"}\n' \
+    "$NORM_NOW" "$field" "$from_val" "$to_val" "$ID" >> "$NORM_LOG"
+  echo "NOTE: Normalized $field: '$from_val' -> '$to_val' (logged to normalizations.jsonl)." >&2
+}
+
+# Helper: enforce one enum field in the entry.
+# Usage: enforce_enum <entry_jq_path> <schema_jq_path> <norm_key> <log_field_name>
+# entry_jq_path: jq expression to test and read the field (e.g. '.growth.complexity')
+# schema_jq_path: jq path to the enum array in schema (e.g. '.properties.growth.properties.complexity.enum')
+# norm_key: key in normalizations map (e.g. "complexity")
+# log_field_name: human-readable name for normalization log (e.g. "growth.complexity")
+enforce_enum() {
+  local entry_path="$1"
+  local schema_path="$2"
+  local norm_key="$3"
+  local log_field="$4"
+
+  # Only act if the field is present and non-null
+  if echo "$ENTRY" | jq -e "${entry_path} != null" >/dev/null 2>&1; then
+    local curr_val
+    curr_val=$(echo "$ENTRY" | jq -r "${entry_path}")
+    local is_valid
+    is_valid=$(enum_valid "$schema_path" "$curr_val")
+    if [ "$is_valid" != "true" ]; then
+      local mapped
+      mapped=$(norm_lookup "$norm_key" "$curr_val")
+      if [ -z "$mapped" ]; then
+        mapped="unspecified"
+      fi
+      ENTRY=$(echo "$ENTRY" | jq --arg v "$mapped" "${entry_path} = \$v")
+      log_norm "$log_field" "$curr_val" "$mapped"
+    fi
+  fi
+}
+
+# Enforce all enum fields defined in the schema
+enforce_enum '.growth.complexity'         '.properties.growth.properties.complexity.enum'         'complexity'     'growth.complexity'
+enforce_enum '.growth.autonomy'           '.properties.growth.properties.autonomy.enum'           'autonomy'       'growth.autonomy'
+enforce_enum '.behavioral.drive_state'    '.properties.behavioral.properties.drive_state.enum'    'drive_state'    'behavioral.drive_state'
+enforce_enum '.behavioral.energy'         '.properties.behavioral.properties.energy.enum'         'energy'         'behavioral.energy'
+enforce_enum '.behavioral.cognitive_load' '.properties.behavioral.properties.cognitive_load.enum' 'cognitive_load' 'behavioral.cognitive_load'
+
+# Re-read TYPE from (possibly modified) ENTRY
+TYPE=$(echo "$ENTRY" | jq -r '.type')
+
+# =============================================================================
+# 12c. CONTENT-HASH DEDUP
+#
+# Computes a stable hash from: project + type + title + date(10) + summary[0:200]
+# Checks against seen-hashes.txt. On collision: skip write, log to duplicates.jsonl.
+# A valid (new) entry passes through and its hash is recorded.
+# Bash 3.2-compatible: uses shasum (macOS) falling back to sha256sum (Linux).
+# =============================================================================
+
+SEEN_HASHES="$DATA_DIR/seen-hashes.txt"
+DUPLICATES_LOG="$DATA_DIR/duplicates.jsonl"
+
+# Build hash input: project|type|title|date|summary_prefix
+ENTRY_DATE=$(echo "$TIMESTAMP" | cut -c1-10)
+SUMMARY_PREFIX=$(echo "$ENTRY" | jq -r '.summary // empty' | cut -c1-200)
+HASH_INPUT="${PROJECT}|${TYPE}|${TITLE}|${ENTRY_DATE}|${SUMMARY_PREFIX}"
+
+# Compute hash — shasum on macOS, sha256sum on Linux
+CONTENT_HASH=""
+if command -v shasum >/dev/null 2>&1; then
+  CONTENT_HASH=$(printf '%s' "$HASH_INPUT" | shasum -a 256 | cut -c1-64)
+elif command -v sha256sum >/dev/null 2>&1; then
+  CONTENT_HASH=$(printf '%s' "$HASH_INPUT" | sha256sum | cut -c1-64)
+fi
+# If no hash tool is available, CONTENT_HASH stays empty and dedup is skipped
+
+IS_DUPLICATE=false
+if [ -n "$CONTENT_HASH" ]; then
+  touch "$SEEN_HASHES"
+  if grep -qF "$CONTENT_HASH" "$SEEN_HASHES" 2>/dev/null; then
+    IS_DUPLICATE=true
+    # Log the duplicate (flag only — no data loss, no hard delete)
+    _DUP_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    printf '{"ts":"%s","hash":"%s","entry_id":"%s","project":"%s","type":"%s","title":"%s","date":"%s"}\n' \
+      "$_DUP_NOW" "$CONTENT_HASH" "$ID" "$PROJECT" "$TYPE" "$TITLE" "$ENTRY_DATE" >> "$DUPLICATES_LOG"
+    echo "NOTE: Duplicate entry detected (content-hash match). Logged to duplicates.jsonl — not written to journal." >&2
+  else
+    # Record the hash so future duplicates are caught
+    echo "$CONTENT_HASH" >> "$SEEN_HASHES"
+  fi
+fi
+
+# If duplicate, skip all write targets and exit cleanly
+if [ "$IS_DUPLICATE" = "true" ]; then
+  echo ""
+  echo "SCRIBE: DUPLICATE — \"$TITLE\" [$PROJECT] -> skipped (see duplicates.jsonl)"
+  exit 0
+fi
+
+# =============================================================================
 # 13. TARGET: LOCAL FILES
 # =============================================================================
 
@@ -332,6 +522,11 @@ fi
 
 # =============================================================================
 # 14. TARGET: SUPABASE
+# =============================================================================
+#
+# Fault-tolerant: on failure the entry is queued to sync-queue.jsonl so that
+# reconcile.sh can replay it and close the local<->remote gap. The local write
+# (step 13) already succeeded, so no data is lost.
 # =============================================================================
 
 SUPABASE_OK=false
@@ -384,10 +579,35 @@ if [ "$SUPABASE_ENABLED" = "true" ] && [ -n "$PSQL_BIN" ] && [ -n "$SUPABASE_DB_
       SUPABASE_OK=true
       TARGETS_WRITTEN="${TARGETS_WRITTEN:+$TARGETS_WRITTEN+}supabase"
     else
-      echo "WARN: Supabase insert failed — entry saved to other targets." >&2
-      if type scribe_log_error &>/dev/null; then
-        scribe_log_error "writer" "io" "Supabase insert failed" "entry_id=$SHORT_ID, project=$PROJECT, type=$TYPE"
+      echo "WARN: Supabase insert failed — entry queued to sync-queue.jsonl for reconcile." >&2
+      if type scribe_log_error >/dev/null 2>&1; then
+        scribe_log_error "writer" "io" "Supabase insert failed — queued" "entry_id=$SHORT_ID, project=$PROJECT, type=$TYPE"
       fi
+      # Enqueue for retry — reconcile.sh will replay this queue and close the
+      # local<->remote gap. _queued_at records when the failure occurred.
+      SYNC_QUEUE="$DATA_DIR/sync-queue.jsonl"
+      _QUEUED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      echo "$ENTRY" | jq -c \
+        --arg queued_at "$_QUEUED_AT" \
+        '{
+          id: .id,
+          timestamp: .timestamp,
+          session_id: .session_id,
+          user_id: .user_id,
+          project: .project,
+          type: .type,
+          title: .title,
+          summary: .summary,
+          decisions: (.decisions // []),
+          learnings: (.learnings // []),
+          corrections: (.corrections // []),
+          metrics: (.metrics // {}),
+          connections: (.connections // {}),
+          growth: (.growth // {}),
+          behavioral: (.behavioral // {}),
+          _queued_at: $queued_at
+        }' >> "$SYNC_QUEUE"
+      TARGETS_WRITTEN="${TARGETS_WRITTEN:+$TARGETS_WRITTEN+}queued"
     fi
   fi
 fi
