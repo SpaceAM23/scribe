@@ -29,3 +29,5 @@ import/
 # Encryption keys
 *.key
 recovery-key.txt
+__pycache__/
+*.pyc
