@@ -258,7 +258,8 @@ done
 # 9. EXTRACT KEY VALUES
 # =============================================================================
 
-ID=$(echo "$ENTRY" | jq -r '.id')
+ID=$(echo "$ENTRY" | jq -r '.id' | tr '[:upper:]' '[:lower:]')   # normalize id case at the single door — Postgres uuid is lowercase; uppercase caller ids cause local<->DB divergence
+ENTRY=$(echo "$ENTRY" | jq --arg id "$ID" '.id = $id')           # propagate lowercase to entry file + journal index + DB
 SHORT_ID=$(echo "$ID" | cut -c1-8)
 TIMESTAMP=$(echo "$ENTRY" | jq -r '.timestamp')
 PROJECT=$(echo "$ENTRY" | jq -r '.project')
