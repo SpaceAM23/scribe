@@ -1,0 +1,6 @@
+{
+  "url": "https://<your-team-supabase-ref>.supabase.co",
+  "anon_key": "<team anon key — the shared one in your /chat config>",
+  "jwt": "<your personal Team partition JWT — the team owner sends this to you privately>",
+  "owner": "<your id, e.g. mason>"
+}
