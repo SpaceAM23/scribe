@@ -31,3 +31,5 @@ import/
 recovery-key.txt
 __pycache__/
 *.pyc
+inbox/
+outbox/
