@@ -262,6 +262,26 @@ ID=$(echo "$ENTRY" | jq -r '.id' | tr '[:upper:]' '[:lower:]')   # normalize id 
 ENTRY=$(echo "$ENTRY" | jq --arg id "$ID" '.id = $id')           # propagate lowercase to entry file + journal index + DB
 SHORT_ID=$(echo "$ID" | cut -c1-8)
 TIMESTAMP=$(echo "$ENTRY" | jq -r '.timestamp')
+
+# S2 (2026-06-08): REPAIR invalid id/timestamp at the single door — never persist a literal
+# "$(uuidgen ...)", "$(date ...)", "<uuid>", "<now>", or any non-uuid / non-ISO value.
+# Root cause: callers built entry JSON inside single quotes, so shell substitutions never expanded.
+if ! printf '%s' "$ID" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+  _BAD_ID="$ID"
+  ID=$(uuidgen 2>/dev/null | tr '[:upper:]' '[:lower:]' || echo "gen-$(date +%s)-$$")
+  ENTRY=$(echo "$ENTRY" | jq --arg id "$ID" '.id = $id')
+  SHORT_ID=$(echo "$ID" | cut -c1-8)
+  printf '{"ts":"%s","field":"id","from":%s,"to":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$_BAD_ID" | jq -R .)" "$ID" >> "$DATA_DIR/normalizations.jsonl" 2>/dev/null || true
+  echo "NOTE: invalid id '$_BAD_ID' repaired to '$ID' at the writer door." >&2
+fi
+if printf '%s' "$TIMESTAMP" | grep -q '[$]' || ! printf '%s' "$TIMESTAMP" | grep -qE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'; then
+  _BAD_TS="$TIMESTAMP"
+  _DP=$(printf '%s' "$TIMESTAMP" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}' || true)
+  if [ -n "$_DP" ]; then TIMESTAMP="${_DP}T12:00:00Z"; else TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ); fi
+  ENTRY=$(echo "$ENTRY" | jq --arg t "$TIMESTAMP" '.timestamp = $t')
+  printf '{"ts":"%s","field":"timestamp","from":%s,"to":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$_BAD_TS" | jq -R .)" "$TIMESTAMP" >> "$DATA_DIR/normalizations.jsonl" 2>/dev/null || true
+  echo "NOTE: invalid timestamp '$_BAD_TS' repaired to '$TIMESTAMP' at the writer door." >&2
+fi
 PROJECT=$(echo "$ENTRY" | jq -r '.project')
 TYPE=$(echo "$ENTRY" | jq -r '.type')
 TITLE=$(echo "$ENTRY" | jq -r '.title')
@@ -315,7 +335,25 @@ for t in $CORE_TYPES; do
   if [ "$TYPE" = "$t" ]; then TYPE_IS_CORE=true; break; fi
 done
 if [ "$TYPE_IS_CORE" = false ]; then
-  echo "NOTE: Custom entry type '$TYPE' (not in core set)." >&2
+  # S2 (2026-06-08): the DB type CHECK rejects non-core types — a custom type silently fails the
+  # DB insert and queues forever. Hard-normalize to a valid core type (map common variants;
+  # fall back to "milestone") so the entry persists. No data loss of the entry.
+  _BAD_TYPE="$TYPE"
+  case "$TYPE" in
+    decision|decided|decision-made) TYPE="decision_made" ;;
+    feature|feature_built|feature_complete|shipped|built) TYPE="feature_shipped" ;;
+    bug|bugfix|fix|fixed|bug-fixed) TYPE="bug_fixed" ;;
+    learned|learnt|lesson|insight|learnings) TYPE="learning" ;;
+    process|process-created|workflow) TYPE="process_created" ;;
+    tool|tool-discovered) TYPE="tool_discovered" ;;
+    feedback|feedback-received) TYPE="feedback_received" ;;
+    session|session-open|open|start) TYPE="session_open" ;;
+    reflect|reflections) TYPE="reflection" ;;
+    *) TYPE="milestone" ;;
+  esac
+  ENTRY=$(echo "$ENTRY" | jq --arg t "$TYPE" '.type = $t')
+  printf '{"ts":"%s","field":"type","from":%s,"to":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$_BAD_TYPE" | jq -R .)" "$TYPE" >> "$DATA_DIR/normalizations.jsonl" 2>/dev/null || true
+  echo "NOTE: invalid type '$_BAD_TYPE' normalized to '$TYPE' (DB enum) at the writer door." >&2
 fi
 
 # =============================================================================
