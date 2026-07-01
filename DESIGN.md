@@ -32,16 +32,26 @@ The skill (engine) and user data (journal) live in separate locations:
 ~/Desktop/Scribe/              <- USER DATA (permanent, never touched by updates)
   config.json                  <- User preferences, storage targets, skill registry
   entries/                     <- Individual JSON entry files
-  journal.jsonl                <- Append-only JSONL index
-  index.json                   <- Stats, tag cloud, growth summary
+  journal.jsonl                <- Append-only JSONL index (THE source of truth)
+  index.json                   <- Stats, tag cloud, growth summary (derived)
+  seen-hashes.txt              <- Content-hash dedup ledger (derived)
   session-counter.json         <- Session numbering
-  correction-tracker.json      <- Correction frequency per pattern
+  correction-tracker.json      <- Correction frequency per pattern (derived)
+  canonical/                   <- Taxonomy: projects.json (registry + aliases),
+                                  correction-patterns.json (vocabulary),
+                                  taxonomy-suggestions.jsonl (pending mints)
+  briefs/                      <- Per-project session briefs + _portfolio.md
+  sync-queue.jsonl             <- Failed Supabase writes awaiting reconcile
+  sync-dead-letter.jsonl       <- Permanently-failed sync entries (annotated)
+  normalizations.jsonl         <- Every write-time repair, logged
+  duplicates.jsonl             <- Refused duplicates (full payload preserved)
   tuning.json                  <- User-approved self-optimization config
   inbox/                       <- Received Scribe packets
   outbox/                      <- Sent Scribe packets (archive)
   revisions/                   <- Backup-before-delete (30-day retention)
-  pointer.json                 <- Links skill -> data location
 ```
+
+Everything except `journal.jsonl` and `entries/` is either configuration or *derived state* — `core/doctor.py` can regenerate index.json, seen-hashes.txt, and (via the journal) the correction tracker at any time.
 
 **pointer.json** (in the skill directory) points to the data directory:
 ```json
@@ -60,10 +70,17 @@ core/
   observer-prompt.md           <- Main observation intelligence
   reader-prompt.md             <- Reflection/analysis intelligence
   behavioral-library.md        <- Full psychological/sociological framework
-  schema.json                  <- Entry schema (additive-only)
+  schema.json                  <- Entry schema v2 (additive-only)
   packet-schema.json           <- Scribe-to-Scribe packet format
   correction-escalation.md     <- Escalation protocol
-  writer.sh                    <- Multi-target write pipeline
+  writer.sh                    <- Multi-target write pipeline (locked, deduped)
+  track-corrections.py         <- Vocabulary-driven correction tracker
+  brief.py                     <- Session-brief compiler (the read path)
+  doctor.py                    <- Derived-state check/fix from the journal
+  taxonomy.py                  <- Deliberate category minting + suggestions
+  reconcile.sh                 <- Sync-queue replay with dead-letter handling
+  heal.py / heal-trend.py      <- Self-healing analysis
+  librarian.py                 <- NEXUS promotion engine
 
 adapters/
   claude-code/                 <- Bash scripts, slash commands, status line
@@ -75,21 +92,45 @@ All three adapters share the same core intelligence. The adapter handles I/O; th
 
 ### 2.3 Multi-Target Writer Pipeline
 
-Entry JSON flows through a pipeline that writes to each enabled target independently:
+Entry JSON flows through a single hardened door (`core/writer.sh`). The governing principle is **no data loss**: an entry is repaired and normalized, never rejected (the only hard failures are unparseable JSON and missing required fields).
 
 ```
 Entry JSON
-  -> validate (required fields, schema compliance)
-  -> write to local file (entries/<id>.json)           [if enabled]
-  -> append to journal.jsonl                           [if enabled]
-  -> write to Google Drive                             [if enabled]
-  -> write to Supabase                                 [if enabled]
-  -> update index.json stats
-  -> update correction-tracker.json (if corrections[])
+  -> validate JSON + required fields
+  -> repair invalid id/timestamp at the door (logged to normalizations.jsonl)
+  -> resolve project aliases (canonical/projects.json)
+  -> normalize unknown project -> "meta"   + queue taxonomy suggestion
+  -> normalize invalid enums from schema.json (never hardcoded)
+  -> normalize unknown type -> nearest core type + queue taxonomy suggestion
+  == ACQUIRE WRITER LOCK (mkdir lock, stale-lock stealing) ==
+  -> content-hash dedup check (duplicates -> duplicates.jsonl, full payload)
+  -> write local file (entries/<id>.json)              [if enabled]
+  -> append to journal.jsonl
+  -> record content hash (ONLY after the append succeeded)
+  -> write to Supabase; on failure queue to sync-queue.jsonl
+  -> write Google Drive marker                         [if enabled]
+  -> update index.json stats (atomic tmp+rename; corrupt copy quarantined)
+  -> update correction-tracker.json via track-corrections.py (stdin-piped)
+  == RELEASE WRITER LOCK ==
   -> display receipt to user
+  -> post-write hook: regenerate briefs/<project>.md (non-fatal)
 ```
 
-Each target fails independently — a Supabase outage doesn't block local writes. Local files are always the primary source of truth when available.
+Each target fails independently — a Supabase outage doesn't block local writes; the failed insert is queued and `core/reconcile.sh` replays it later (poison entries dead-letter instead of wedging the queue). Local files are always the primary source of truth when available.
+
+Concurrency: parallel writers are serialized by a bash-3.2-safe mkdir lock in the data dir (`.writer.lock/`), with the holder pid recorded for stale-lock recovery. On lock timeout the writer proceeds *unlocked* rather than dropping the entry — a rare index race is repairable by the doctor; a dropped entry is not.
+
+### 2.3b Derived State and the Doctor
+
+`journal.jsonl` is the source of truth; index.json, seen-hashes.txt, and the correction tracker are derived. `core/doctor.py --check` verifies all derived state against the journal (plus id well-formedness/uniqueness); `--fix` rebuilds it atomically while holding the same writer lock, and aborts rather than racing a live writer. Repairs are logged to `doctor-repairs-<date>.json`.
+
+### 2.3c The Read Path: Session Briefs
+
+`core/brief.py` compiles `briefs/<project>.md` (hard-capped at 60 lines: LANDMINES, KNOWLEDGE, RECENT, OPEN THREADS, meta budget) and `briefs/_portfolio.md` (per-project rollup, pending taxonomy suggestions, doctor status). Agents read the brief at session start instead of grepping the raw journal. The writer regenerates the touched project's brief after every write.
+
+### 2.3d Taxonomy
+
+Categories are minted deliberately, never automatically. The writer queues unknown projects/types to `canonical/taxonomy-suggestions.jsonl`; `core/taxonomy.py` lists suggestions and mints projects (canonical/projects.json), entry types (DATA_DIR schema.json enum, seeded from core), and correction patterns (canonical/correction-patterns.json — inserted before the catch-all, since matcher order is semantic). Every mutation backs up the target file first and validates the JSON after writing.
 
 ### 2.4 Storage Matrix
 
@@ -293,7 +334,9 @@ The core intelligence gap: logging a mistake and preventing its recurrence are t
 
 ### 7.1 How It Works
 
-Scribe maintains a `correction-tracker.json` in the user's data directory:
+Corrections are classified against a **controlled vocabulary** (`canonical/correction-patterns.json`, ~10 named patterns with ordered regex/keyword matchers) by `core/track-corrections.py`. New pattern slugs are never minted automatically — auto-slugging one pattern per phrasing buries the real patterns and kills repeat-detection. Anything unmatched lands in an explicit `uncategorized` catch-all with its full text preserved for later manual reclassification (it never escalates). New patterns are minted deliberately with `core/taxonomy.py add-pattern`.
+
+Scribe maintains the resulting `correction-tracker.json` in the user's data directory:
 
 ```json
 {

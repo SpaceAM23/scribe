@@ -15,6 +15,19 @@ Scribe observes your Claude sessions, records what matters, and builds a longitu
 - **Self-improves with your guidance** — Scribe evaluates its own effectiveness and proposes adjustments for your approval
 - **Shares context between collaborators** — Scribe-to-Scribe packets carry relational intelligence, not just data
 
+## What's New in 0.2.0
+
+The largest update since inception — the write path, read path, and taxonomy were rebuilt around one principle: **no data loss, ever**.
+
+- **Session briefs — the read path** (`core/brief.py`). Agents no longer grep the raw journal at session start. Every write regenerates `briefs/<project>.md` — a 60-line-capped brief with the project's LANDMINES (correction patterns with lifetime/30-day counts), KNOWLEDGE, RECENT session summaries, OPEN THREADS, and a meta-budget line — plus `briefs/_portfolio.md`, a one-line-per-project rollup with pending taxonomy suggestions and doctor status.
+- **Concurrency-safe writer** (`core/writer.sh`). A bash-3.2-safe mkdir lock serializes parallel writers around the critical section (dedup check → journal append → index → tracker), with stale-lock recovery via atomic rename-aside. index.json updates are atomic (tmp+rename) with corrupt-file quarantine. The content hash is recorded only *after* the journal append succeeds, so a crash can never poison dedup into refusing a real entry. The locale is pinned so cron and interactive writes hash identically.
+- **Doctor** (`core/doctor.py`). Regenerates ALL derived state from journal.jsonl in one pass: rebuilds seen-hashes.txt with the exact writer hash recipe, recomputes every index.json counter, and validates/repairs entry ids (malformed, uppercase, duplicate). `--check` reports; `--fix` repairs atomically under the same writer lock, aborting rather than racing a live writer. Every repair is logged.
+- **Taxonomy minting** (`core/taxonomy.py`). Unknown projects/types are never rejected and never silently misfiled: the writer normalizes them (to `meta`/`milestone`), logs the repair, and queues the ORIGINAL value to `canonical/taxonomy-suggestions.jsonl`. `taxonomy.py` is how you deliberately mint new projects, entry types, and correction patterns — with backups, atomic writes, and suggestion resolution. Pending suggestions surface in the portfolio brief.
+- **Hardened sync** (`core/reconcile.sh`). The Supabase replay queue can no longer wedge: unparseable or permanently-failing entries (bad casts, constraint violations) move to `sync-dead-letter.jsonl` — annotated, never deleted — and transient failures retry up to 5 attempts. Signal-safe temp-file cleanup, plus a hardlink swap-guard so entries appended mid-replay are never dropped.
+- **Vocabulary-driven correction tracking** (`core/track-corrections.py`). Corrections are classified against a controlled ~10-pattern vocabulary (`canonical/correction-patterns.json`) instead of auto-minting a new slug per phrasing (which buried real patterns and killed repeat-detection). Unmatched corrections land in `uncategorized` with full text preserved. Entry JSON is piped over stdin — hostile text (quotes, newlines, triple-quotes) can no longer crash the tracker.
+- **Schema v2** (`core/schema.json`). Adds the `essence` entry type, `unspecified` enum values, and the `professional_development` behavioral block. Enum enforcement at the writer boundary reads from the schema — your `DATA_DIR/schema.json` copy takes precedence over the install's.
+- **Tests** (`tests/`). Concurrent-writer, hostile-tracker-input, and NEXUS-privacy proofs, all bash 3.2-compatible and runnable against a scratch data dir.
+
 ## Platforms
 
 | Platform | Install | Storage Options |
@@ -97,17 +110,27 @@ Scribe doesn't just log mistakes — it prevents them from recurring:
 
 ```
 ~/.claude/scribe/              <- Skill (updatable engine)
-  core/                        <- Prompts, schema, behavioral library, writer
+  core/                        <- Prompts, schema, writer, doctor, brief,
+                                  taxonomy, reconcile, correction tracker
   adapters/                    <- Claude Code, Desktop, Web
-  scripts/                     <- Install, entry creator
-  templates/                   <- Config templates
+  scripts/                     <- Install, entry creator, team sync
+  templates/                   <- Config, taxonomy, and .env templates
+  tests/                       <- Concurrency / hostile-input / privacy proofs
 
 ~/Desktop/Scribe/              <- Your data (permanent, yours)
   config.json                  <- Settings, profile, skill registry
   entries/                     <- Individual JSON entry files
-  journal.jsonl                <- Append-only index
-  index.json                   <- Stats, growth summary
+  journal.jsonl                <- Append-only index (source of truth)
+  index.json                   <- Stats, growth summary (derived; doctor rebuilds)
+  seen-hashes.txt              <- Content-hash dedup ledger (derived)
   correction-tracker.json      <- Correction patterns and escalation state
+  canonical/                   <- projects.json, correction-patterns.json,
+                                  taxonomy-suggestions.jsonl
+  briefs/                      <- Per-project session briefs + _portfolio.md
+  sync-queue.jsonl             <- Failed Supabase writes awaiting reconcile
+  sync-dead-letter.jsonl       <- Permanently-failed sync entries (annotated)
+  normalizations.jsonl         <- Every write-time repair, logged
+  duplicates.jsonl             <- Refused duplicates (full payload preserved)
   tuning.json                  <- User-approved Scribe adjustments
   inbox/                       <- Received packets
   outbox/                      <- Sent packets

@@ -173,17 +173,36 @@ mkdir -p "${DATA_DIR}/entries"
 mkdir -p "${DATA_DIR}/inbox"
 mkdir -p "${DATA_DIR}/outbox"
 mkdir -p "${DATA_DIR}/revisions"
+mkdir -p "${DATA_DIR}/briefs"
+mkdir -p "${DATA_DIR}/canonical"
 
 success "Data directory: ${DATA_DIR}"
 
 # Create subdirectories
-for subdir in entries inbox outbox revisions; do
+for subdir in entries inbox outbox revisions briefs canonical; do
     if [[ -d "${DATA_DIR}/${subdir}" ]]; then
         dim "  ${subdir}/ exists"
     else
         dim "  ${subdir}/ created"
     fi
 done
+
+# Seed the canonical taxonomy files (never overwrite an existing copy)
+if [[ -f "${DATA_DIR}/canonical/correction-patterns.json" ]]; then
+    dim "  canonical/correction-patterns.json exists (preserved)"
+elif [[ -f "${REPO_ROOT}/templates/correction-patterns.template.json" ]]; then
+    cp "${REPO_ROOT}/templates/correction-patterns.template.json" "${DATA_DIR}/canonical/correction-patterns.json"
+    success "canonical/correction-patterns.json seeded (correction vocabulary)"
+fi
+if [[ -f "${DATA_DIR}/canonical/projects.json" ]]; then
+    dim "  canonical/projects.json exists (preserved)"
+elif [[ -f "${REPO_ROOT}/templates/projects.template.json" ]]; then
+    # Ships EMPTY = open mode (any project name accepted). Mint projects later:
+    #   python3 core/taxonomy.py add-project <name>
+    jq 'del(._comment, ._example)' "${REPO_ROOT}/templates/projects.template.json" \
+        > "${DATA_DIR}/canonical/projects.json"
+    success "canonical/projects.json seeded (open mode — mint projects with core/taxonomy.py)"
+fi
 
 # Write pointer.json in the repo root
 POINTER_FILE="${REPO_ROOT}/pointer.json"
@@ -332,6 +351,11 @@ if ask_yn "Enable Supabase storage?" "n"; then
     dim "    behavioral JSONB DEFAULT '{}',"
     dim "    created_at TIMESTAMPTZ DEFAULT now()"
     dim "  );"
+    printf "\n"
+    info "(Full schema with RLS: adapters/claude-web/supabase-setup.sql)"
+    printf "\n"
+    info "For direct database writes, put your DB password in ${DATA_DIR}/.env:"
+    dim "  SCRIBE_DB_PASSWORD=...   (see templates/.env.example)"
     printf "\n"
     success "Supabase: enabled"
 else
@@ -772,7 +796,9 @@ CORRECTION_TRACKER="${DATA_DIR}/correction-tracker.json"
 if [[ ! -f "${CORRECTION_TRACKER}" ]]; then
     cat > "${CORRECTION_TRACKER}" <<CTEOF
 {
-  "patterns": {}
+  "schema_version": 1,
+  "patterns": {},
+  "last_updated": ""
 }
 CTEOF
     success "correction-tracker.json initialized"

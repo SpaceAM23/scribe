@@ -7,17 +7,40 @@
 # Compatible with bash 3.2+ (macOS default).
 #
 # Write-time hardening:
+#   - Writer lock: a bash-3.2-safe mkdir lock serializes concurrent writers
+#     around the critical section (dedup check -> journal append -> index ->
+#     tracker), with stale-lock recovery via atomic rename-aside
 #   - Enum enforcement reads valid values from the install's schema.json
 #   - Normalization backstop reads its map from DATA_DIR/normalizations.json
 #     (falls back to templates/normalizations.template.json); logs all repairs
+#   - Unknown projects/types are normalized (never rejected) and the ORIGINAL
+#     value is queued to canonical/taxonomy-suggestions.jsonl for deliberate
+#     minting via core/taxonomy.py
 #   - Fault-tolerant Supabase sync-queue: failed writes are queued for reconcile
-#   - Content-hash dedup: prevents duplicate journal entries
+#   - Content-hash dedup: prevents duplicate journal entries; the hash is
+#     recorded only AFTER the journal append succeeds (crash-safe direction)
+#   - Post-write hook regenerates the project's session brief (core/brief.py)
 #
 # Usage:
 #   echo '{"id":"...","timestamp":"...",...}' | writer.sh
 #   writer.sh entry.json
 
 set -euo pipefail
+
+# Pin the locale. The content-hash recipe in section 12c uses `cut -c1-200`,
+# which truncates 200 BYTES under LC_ALL=C (the cron/launchd default) but
+# 200 CHARACTERS under a UTF-8 locale. A byte-truncated hash diverges from
+# doctor.py's 200-character slice and from interactive-shell writes, silently
+# breaking dedup across execution contexts. Prefer a UTF-8 locale that exists
+# on this machine; fall back to C only when no UTF-8 locale is available
+# (still deterministic per machine).
+if locale -a 2>/dev/null | grep -qix 'en_US.UTF-8'; then
+  export LC_ALL=en_US.UTF-8
+elif locale -a 2>/dev/null | grep -qix 'C.UTF-8'; then
+  export LC_ALL=C.UTF-8
+else
+  export LC_ALL=C
+fi
 
 # =============================================================================
 # 0. ERROR HANDLER
@@ -59,7 +82,7 @@ resolve_data_path() {
     return
   fi
 
-  # 2. pointer.json in the same directory as this script
+  # 2. pointer.json in the repo root (this script lives in core/)
   local script_dir
   script_dir="$(cd "$(dirname "$0")" && pwd)"
   local pointer="$script_dir/../pointer.json"
@@ -73,7 +96,7 @@ resolve_data_path() {
     fi
   fi
 
-  # 3. Check parent of script dir (skill install may nest core/)
+  # 3. Check script dir itself (skill install may nest core/)
   local alt_pointer="$script_dir/pointer.json"
   if [ -f "$alt_pointer" ]; then
     local alt_path
@@ -110,8 +133,91 @@ ENV_FILE="$DATA_DIR/.env"
 CORRECTION_TRACKER="$DATA_DIR/correction-tracker.json"
 SESSION_COUNTER="$DATA_DIR/session-counter.json"
 
-# Core entry types — accepted without config. Custom types also allowed.
-CORE_TYPES="session_open feature_shipped bug_fixed decision_made learning correction process_created tool_discovered feedback_received milestone reflection"
+# =============================================================================
+# 2b. WRITER LOCK (bash 3.2-safe mkdir lock)
+#
+# Serializes concurrent writers around the critical section (dedup check ->
+# journal append -> index.json update -> correction-tracker update). Without
+# this, parallel writers lose index.json increments (read-modify-write race),
+# can truncate index.json to 0 bytes, race the correction tracker, and slip
+# past the seen-hashes dedup check (check-then-append TOCTOU).
+#
+# mkdir is atomic on POSIX filesystems and works on bash 3.2 (no flock needed).
+# Stale locks are recovered: the holder PID is recorded in the lockdir; if the
+# holder is dead (kill -9, crash) the lock is stolen. A pid-less lockdir older
+# than 60s is also treated as stale.
+# =============================================================================
+
+LOCK_DIR_PATH="$DATA_DIR/.writer.lock"
+SCRIBE_LOCK_HELD="false"
+
+release_scribe_lock() {
+  if [ "$SCRIBE_LOCK_HELD" = "true" ]; then
+    # Re-verify ownership before removing. If our lock was stolen (e.g. we
+    # were stopped long enough to look stale) the lockdir now belongs to
+    # another writer — removing it would let a third writer in.
+    local owner
+    owner=$(cat "$LOCK_DIR_PATH/pid" 2>/dev/null || true)
+    if [ "$owner" = "$$" ]; then
+      rm -rf "$LOCK_DIR_PATH" 2>/dev/null || true
+    fi
+    SCRIBE_LOCK_HELD="false"
+  fi
+}
+
+# Steal a stale lock by ATOMICALLY renaming the lockdir aside (mv/rename is
+# atomic; rm -rf is not). When several writers race to steal, exactly one wins
+# the rename; the losers' mv fails and they simply retry mkdir. With rm -rf,
+# two stealers could interleave (one removes the OTHER stealer's freshly
+# acquired lock) and both end up inside the critical section.
+steal_stale_lock() {
+  local graveyard
+  graveyard="$LOCK_DIR_PATH.stale.$$.$(date +%s 2>/dev/null || echo 0)"
+  if mv "$LOCK_DIR_PATH" "$graveyard" 2>/dev/null; then
+    rm -rf "$graveyard" 2>/dev/null || true
+  fi
+}
+
+# Returns 0 with lock held, 1 on timeout (~15s). Never throws under set -e.
+acquire_scribe_lock() {
+  local tries=0
+  local max_tries=75   # 75 x 0.2s = ~15s
+  while [ "$tries" -lt "$max_tries" ]; do
+    if mkdir "$LOCK_DIR_PATH" 2>/dev/null; then
+      SCRIBE_LOCK_HELD="true"
+      printf '%s' "$$" > "$LOCK_DIR_PATH/pid" 2>/dev/null || true
+      return 0
+    fi
+    # Stale-lock recovery: recorded holder PID no longer alive -> steal.
+    local holder
+    holder=$(cat "$LOCK_DIR_PATH/pid" 2>/dev/null || true)
+    if [ -n "$holder" ]; then
+      if ! kill -0 "$holder" 2>/dev/null; then
+        steal_stale_lock
+      fi
+    else
+      # No pid file (holder crashed between mkdir and pid write, or mid-steal).
+      # Treat as stale only if the lockdir is old.
+      local lock_mtime now_epoch
+      lock_mtime=$(stat -f %m "$LOCK_DIR_PATH" 2>/dev/null || stat -c %Y "$LOCK_DIR_PATH" 2>/dev/null || echo "")
+      now_epoch=$(date +%s)
+      if [ -n "$lock_mtime" ] && [ $((now_epoch - lock_mtime)) -gt 60 ]; then
+        steal_stale_lock
+      fi
+    fi
+    tries=$((tries + 1))
+    sleep 0.2
+  done
+  return 1
+}
+
+# Release on any exit path (duplicate short-circuit, error under set -e, signal).
+trap 'release_scribe_lock' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+# Core entry types — accepted without config. Custom types also allowed (soft validation).
+CORE_TYPES="session_open feature_shipped bug_fixed decision_made learning correction process_created tool_discovered feedback_received milestone reflection essence"
 
 # =============================================================================
 # 3. LOAD CONFIG
@@ -127,6 +233,7 @@ DRIVE_FOLDER_ID=""
 LOCAL_ENABLED="true"
 PROJECTS_CONFIGURED="false"
 PROJECT_ALIASES=""
+CONFIG_USER_ID=""
 
 if [ -f "$CONFIG_FILE" ]; then
   # Storage targets
@@ -135,6 +242,9 @@ if [ -f "$CONFIG_FILE" ]; then
   DRIVE_ENABLED=$(jq -r '.storage.google_drive.enabled // false' "$CONFIG_FILE")
   DRIVE_FOLDER_ID=$(jq -r '.storage.google_drive.folder_id // empty' "$CONFIG_FILE" 2>/dev/null || true)
   LOCAL_ENABLED=$(jq -r '.storage.local.enabled // true' "$CONFIG_FILE")
+
+  # Owner identity — used as the default user_id when an entry omits it
+  CONFIG_USER_ID=$(jq -r '.user_id // empty' "$CONFIG_FILE" 2>/dev/null || true)
 
   # Projects — check if any are defined
   PROJ_COUNT=$(jq '.projects | length' "$CONFIG_FILE" 2>/dev/null || echo "0")
@@ -242,10 +352,10 @@ if ! echo "$ENTRY" | jq empty 2>/dev/null; then
 fi
 
 # =============================================================================
-# 8. VALIDATE REQUIRED FIELDS
+# 8. VALIDATE REQUIRED FIELDS (user_id optional — defaults to config owner)
 # =============================================================================
 
-REQUIRED_FIELDS="id timestamp session_id user_id project type title summary"
+REQUIRED_FIELDS="id timestamp session_id project type title summary"
 for field in $REQUIRED_FIELDS; do
   val=$(echo "$ENTRY" | jq -r --arg f "$field" '.[$f] // empty')
   if [ -z "$val" ]; then
@@ -259,11 +369,11 @@ done
 # =============================================================================
 
 ID=$(echo "$ENTRY" | jq -r '.id' | tr '[:upper:]' '[:lower:]')   # normalize id case at the single door — Postgres uuid is lowercase; uppercase caller ids cause local<->DB divergence
-ENTRY=$(echo "$ENTRY" | jq --arg id "$ID" '.id = $id')           # propagate lowercase to entry file + journal index + DB
+ENTRY=$(echo "$ENTRY" | jq --arg id "$ID" '.id = $id')           # propagate lowercase so entry file + journal index + DB all agree
 SHORT_ID=$(echo "$ID" | cut -c1-8)
 TIMESTAMP=$(echo "$ENTRY" | jq -r '.timestamp')
 
-# S2 (2026-06-08): REPAIR invalid id/timestamp at the single door — never persist a literal
+# REPAIR invalid id/timestamp at the single door — never persist a literal
 # "$(uuidgen ...)", "$(date ...)", "<uuid>", "<now>", or any non-uuid / non-ISO value.
 # Root cause: callers built entry JSON inside single quotes, so shell substitutions never expanded.
 if ! printf '%s' "$ID" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
@@ -286,15 +396,33 @@ PROJECT=$(echo "$ENTRY" | jq -r '.project')
 TYPE=$(echo "$ENTRY" | jq -r '.type')
 TITLE=$(echo "$ENTRY" | jq -r '.title')
 SESSION_ID=$(echo "$ENTRY" | jq -r '.session_id')
-USER_ID=$(echo "$ENTRY" | jq -r '.user_id')
+
+# user_id: entry value > config.json owner > "unknown". Never reject an entry
+# for a missing user_id (no-data-loss); inject the resolved value so the entry
+# file, journal index, and DB all agree.
+USER_ID=$(echo "$ENTRY" | jq -r '.user_id // empty')
+if [ -z "$USER_ID" ]; then
+  USER_ID="${CONFIG_USER_ID:-unknown}"
+  ENTRY=$(echo "$ENTRY" | jq --arg u "$USER_ID" '.user_id = $u')
+fi
 
 # =============================================================================
-# 10. RESOLVE PROJECT ALIASES
+# 10. RESOLVE PROJECT ALIASES (canonical/projects.json first, then config fallback)
 # =============================================================================
 
-if [ -n "$PROJECT_ALIASES" ]; then
+CANONICAL_PROJECTS_FILE="$DATA_DIR/canonical/projects.json"
+
+# Try canonical/projects.json first (the authoritative source)
+if [ -f "$CANONICAL_PROJECTS_FILE" ]; then
+  # Resolve alias using canonical/projects.json aliases map
+  RESOLVED_PROJECT=$(jq -r --arg p "$PROJECT" '.aliases[$p] // empty' "$CANONICAL_PROJECTS_FILE" 2>/dev/null || true)
+  if [ -n "$RESOLVED_PROJECT" ] && [ "$RESOLVED_PROJECT" != "$PROJECT" ]; then
+    PROJECT="$RESOLVED_PROJECT"
+    ENTRY=$(echo "$ENTRY" | jq --arg p "$PROJECT" '.project = $p')
+  fi
+elif [ -n "$PROJECT_ALIASES" ]; then
+  # Fallback: config-driven alias list (legacy path for installs without canonical/)
   RESOLVED_PROJECT="$PROJECT"
-  # Iterate alias=canonical pairs
   while IFS= read -r alias_line; do
     [ -z "$alias_line" ] && continue
     alias_key="${alias_line%%=*}"
@@ -312,22 +440,79 @@ if [ -n "$PROJECT_ALIASES" ]; then
 fi
 
 # =============================================================================
-# 11. VALIDATE PROJECT
+# 10b. TAXONOMY SUGGESTION QUEUE
+#
+# When an unknown project or type gets normalized away (sections 11 and 12b),
+# the ORIGINAL submitted value is also queued to
+# canonical/taxonomy-suggestions.jsonl so a category can be deliberately
+# minted later (core/taxonomy.py; surfaced in briefs/_portfolio.md).
+# Without this, knowledge gets misfiled into meta/milestone with no trace
+# that a category was wanted. Non-fatal: a failed append never blocks the
+# entry write. Values are escaped with jq -Rs (same style as log_norm).
 # =============================================================================
 
-if [ "$PROJECTS_CONFIGURED" = "true" ]; then
+TAXONOMY_SUGGESTIONS="$DATA_DIR/canonical/taxonomy-suggestions.jsonl"
+
+# Usage: queue_taxonomy_suggestion <project|type> <submitted_value>
+queue_taxonomy_suggestion() {
+  local sug_kind="$1"
+  local sug_value="$2"
+  {
+    mkdir -p "$DATA_DIR/canonical"
+    printf '{"ts":"%s","kind":"%s","value":%s,"entry_id":"%s","title":%s}\n' \
+      "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      "$sug_kind" \
+      "$(printf '%s' "$sug_value" | jq -Rs .)" \
+      "$ID" \
+      "$(printf '%s' "$TITLE" | jq -Rs .)" >> "$TAXONOMY_SUGGESTIONS"
+  } 2>/dev/null || true
+}
+
+# =============================================================================
+# 11. VALIDATE PROJECT (canonical first, then config-driven; never reject — normalize)
+# =============================================================================
+
+# Never drop an entry due to unknown project.
+# If canonical/projects.json exists AND lists at least one project, validate
+# against it. An EMPTY projects[] list means "open mode": any project name is
+# accepted (the state a fresh install ships in). Unknown -> normalize to
+# "meta", log, and queue a taxonomy suggestion; keep the entry.
+if [ -f "$CANONICAL_PROJECTS_FILE" ]; then
+  CANONICAL_PROJ_COUNT=$(jq -r '.projects | length' "$CANONICAL_PROJECTS_FILE" 2>/dev/null || echo "0")
+  case "$CANONICAL_PROJ_COUNT" in ''|*[!0-9]*) CANONICAL_PROJ_COUNT=0 ;; esac
+  if [ "$CANONICAL_PROJ_COUNT" -gt 0 ]; then
+    PROJ_IN_CANONICAL=$(jq -r --arg p "$PROJECT" '[.projects[] | select(. == $p)] | length > 0' "$CANONICAL_PROJECTS_FILE" 2>/dev/null || echo "false")
+    if [ "$PROJ_IN_CANONICAL" != "true" ]; then
+      ORIGINAL_PROJECT="$PROJECT"
+      PROJECT="meta"
+      ENTRY=$(echo "$ENTRY" | jq --arg p "$PROJECT" '.project = $p')
+      _NORM_LOG_PROJ="$DATA_DIR/normalizations.jsonl"
+      _NORM_NOW_PROJ=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+      # jq -Rs escapes arbitrary caller values (quotes, backslashes, newlines) —
+      # raw printf interpolation produced unparseable normalizations.jsonl lines
+      # (same escaping the id/timestamp repair paths use).
+      printf '{"ts":"%s","field":"project","from":%s,"to":"meta","entry_id":"%s"}\n' \
+        "$_NORM_NOW_PROJ" "$(printf '%s' "$ORIGINAL_PROJECT" | jq -Rs .)" "$ID" >> "$_NORM_LOG_PROJ"
+      # 10b: queue the original value so the category can be minted deliberately
+      queue_taxonomy_suggestion "project" "$ORIGINAL_PROJECT"
+      echo "NOTE: Unknown project '$ORIGINAL_PROJECT' normalized to 'meta'. Logged to normalizations.jsonl + taxonomy-suggestions.jsonl." >&2
+    fi
+  fi
+elif [ "$PROJECTS_CONFIGURED" = "true" ]; then
+  # Legacy: config.json defines projects as an object/map
   PROJ_VALID=$(jq -r --arg p "$PROJECT" '.projects | has($p)' "$CONFIG_FILE" 2>/dev/null || echo "false")
   if [ "$PROJ_VALID" != "true" ]; then
-    # List valid projects for the error message
-    VALID_LIST=$(jq -r '.projects | keys | join(", ")' "$CONFIG_FILE" 2>/dev/null || echo "(none)")
-    echo "ERROR: Unknown project '$PROJECT'. Configured projects: $VALID_LIST" >&2
-    exit 1
+    ORIGINAL_PROJECT="$PROJECT"
+    PROJECT="meta"
+    ENTRY=$(echo "$ENTRY" | jq --arg p "$PROJECT" '.project = $p')
+    queue_taxonomy_suggestion "project" "$ORIGINAL_PROJECT"
+    echo "NOTE: Unknown project '$ORIGINAL_PROJECT' normalized to 'meta' (config-driven)." >&2
   fi
 fi
-# If no projects are configured, accept any project name (new user)
+# If neither canonical nor config defines projects, accept any project name
 
 # =============================================================================
-# 12. VALIDATE TYPE (warn on non-core, but accept custom types)
+# 12. VALIDATE TYPE (soft: warn on custom types, don't reject)
 # =============================================================================
 
 TYPE_IS_CORE=false
@@ -335,32 +520,14 @@ for t in $CORE_TYPES; do
   if [ "$TYPE" = "$t" ]; then TYPE_IS_CORE=true; break; fi
 done
 if [ "$TYPE_IS_CORE" = false ]; then
-  # S2 (2026-06-08): the DB type CHECK rejects non-core types — a custom type silently fails the
-  # DB insert and queues forever. Hard-normalize to a valid core type (map common variants;
-  # fall back to "milestone") so the entry persists. No data loss of the entry.
-  _BAD_TYPE="$TYPE"
-  case "$TYPE" in
-    decision|decided|decision-made) TYPE="decision_made" ;;
-    feature|feature_built|feature_complete|shipped|built) TYPE="feature_shipped" ;;
-    bug|bugfix|fix|fixed|bug-fixed) TYPE="bug_fixed" ;;
-    learned|learnt|lesson|insight|learnings) TYPE="learning" ;;
-    process|process-created|workflow) TYPE="process_created" ;;
-    tool|tool-discovered) TYPE="tool_discovered" ;;
-    feedback|feedback-received) TYPE="feedback_received" ;;
-    session|session-open|open|start) TYPE="session_open" ;;
-    reflect|reflections) TYPE="reflection" ;;
-    *) TYPE="milestone" ;;
-  esac
-  ENTRY=$(echo "$ENTRY" | jq --arg t "$TYPE" '.type = $t')
-  printf '{"ts":"%s","field":"type","from":%s,"to":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$_BAD_TYPE" | jq -R .)" "$TYPE" >> "$DATA_DIR/normalizations.jsonl" 2>/dev/null || true
-  echo "NOTE: invalid type '$_BAD_TYPE' normalized to '$TYPE' (DB enum) at the writer door." >&2
+  echo "NOTE: Custom entry type '$TYPE' (not in core set)." >&2
 fi
 
 # =============================================================================
 # 12b. ENUM ENFORCEMENT — normalize invalid enum values at the writer boundary
 #
-# Reads valid values FROM schema.json (install's core/schema.json, with
-# DATA_DIR/schema.json taking precedence if the user placed one there).
+# Reads valid values FROM schema.json (user's DATA_DIR copy takes precedence,
+# then the install's core/schema.json — never a hardcoded copy).
 # Consults normalizations.json for deterministic repair (user's copy at
 # DATA_DIR/normalizations.json; falls back to the install's
 # templates/normalizations.template.json).
@@ -373,7 +540,6 @@ fi
 # Resolve schema.json: user's DATA_DIR copy first, then install's core copy
 SCHEMA_FILE="$DATA_DIR/schema.json"
 if [ ! -f "$SCHEMA_FILE" ]; then
-  # Fall back to the schema shipped with this install
   INSTALL_SCHEMA="$SCRIPT_DIR/schema.json"
   if [ -f "$INSTALL_SCHEMA" ]; then
     SCHEMA_FILE="$INSTALL_SCHEMA"
@@ -382,8 +548,12 @@ if [ ! -f "$SCHEMA_FILE" ]; then
   fi
 fi
 
-# Resolve normalizations map: user's DATA_DIR copy first, then install template
-NORM_MAP_FILE="$DATA_DIR/normalizations.json"
+# Resolve normalizations map: DATA_DIR/canonical copy first, then legacy
+# DATA_DIR copy, then the install template
+NORM_MAP_FILE="$DATA_DIR/canonical/normalizations.json"
+if [ ! -f "$NORM_MAP_FILE" ]; then
+  NORM_MAP_FILE="$DATA_DIR/normalizations.json"
+fi
 if [ ! -f "$NORM_MAP_FILE" ]; then
   INSTALL_NORM="$SCRIPT_DIR/../templates/normalizations.template.json"
   if [ -f "$INSTALL_NORM" ]; then
@@ -424,21 +594,23 @@ enum_valid() {
 
 # Helper: append a normalization log entry.
 # Usage: log_norm <field> <from_val> <to_val>
+# from/to are caller-controlled values — jq -Rs escapes quotes/backslashes/
+# newlines so a value like `very "hard"` cannot produce an unparseable
+# normalizations.jsonl line (raw printf interpolation did exactly that).
 log_norm() {
   local field="$1"
   local from_val="$2"
   local to_val="$3"
-  printf '{"ts":"%s","field":"%s","from":"%s","to":"%s","entry_id":"%s"}\n' \
-    "$NORM_NOW" "$field" "$from_val" "$to_val" "$ID" >> "$NORM_LOG"
+  printf '{"ts":"%s","field":"%s","from":%s,"to":%s,"entry_id":"%s"}\n' \
+    "$NORM_NOW" "$field" \
+    "$(printf '%s' "$from_val" | jq -Rs .)" \
+    "$(printf '%s' "$to_val" | jq -Rs .)" \
+    "$ID" >> "$NORM_LOG"
   echo "NOTE: Normalized $field: '$from_val' -> '$to_val' (logged to normalizations.jsonl)." >&2
 }
 
 # Helper: enforce one enum field in the entry.
 # Usage: enforce_enum <entry_jq_path> <schema_jq_path> <norm_key> <log_field_name>
-# entry_jq_path: jq expression to test and read the field (e.g. '.growth.complexity')
-# schema_jq_path: jq path to the enum array in schema (e.g. '.properties.growth.properties.complexity.enum')
-# norm_key: key in normalizations map (e.g. "complexity")
-# log_field_name: human-readable name for normalization log (e.g. "growth.complexity")
 enforce_enum() {
   local entry_path="$1"
   local schema_path="$2"
@@ -470,6 +642,34 @@ enforce_enum '.behavioral.drive_state'    '.properties.behavioral.properties.dri
 enforce_enum '.behavioral.energy'         '.properties.behavioral.properties.energy.enum'         'energy'         'behavioral.energy'
 enforce_enum '.behavioral.cognitive_load' '.properties.behavioral.properties.cognitive_load.enum' 'cognitive_load' 'behavioral.cognitive_load'
 
+# --- Enforce type against the schema enum (hard-normalize, never reject) ---
+# The DB type CHECK rejects non-enum types, so a custom type silently fails
+# the Supabase insert and queues forever. Hard-normalize to a valid core type
+# (map common variants; fall back to "milestone") so the entry persists, and
+# queue the ORIGINAL value as a taxonomy suggestion. No data loss of the entry.
+CURR_TYPE=$(echo "$ENTRY" | jq -r '.type')
+TYPE_IN_SCHEMA=$(enum_valid '.properties.type.enum' "$CURR_TYPE")
+if [ "$TYPE_IN_SCHEMA" != "true" ]; then
+  _BAD_TYPE="$CURR_TYPE"
+  case "$CURR_TYPE" in
+    decision|decided|decision-made) CURR_TYPE="decision_made" ;;
+    feature|feature_built|feature_complete|shipped|built) CURR_TYPE="feature_shipped" ;;
+    bug|bugfix|fix|fixed|bug-fixed) CURR_TYPE="bug_fixed" ;;
+    learned|learnt|lesson|insight|learnings) CURR_TYPE="learning" ;;
+    process|process-created|workflow) CURR_TYPE="process_created" ;;
+    tool|tool-discovered) CURR_TYPE="tool_discovered" ;;
+    feedback|feedback-received) CURR_TYPE="feedback_received" ;;
+    session|session-open|open|start) CURR_TYPE="session_open" ;;
+    reflect|reflections) CURR_TYPE="reflection" ;;
+    *) CURR_TYPE="milestone" ;;
+  esac
+  ENTRY=$(echo "$ENTRY" | jq --arg t "$CURR_TYPE" '.type = $t')
+  printf '{"ts":"%s","field":"type","from":%s,"to":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(printf '%s' "$_BAD_TYPE" | jq -R .)" "$CURR_TYPE" >> "$NORM_LOG" 2>/dev/null || true
+  # 10b: queue the original value so the category can be minted deliberately
+  queue_taxonomy_suggestion "type" "$_BAD_TYPE"
+  echo "NOTE: invalid type '$_BAD_TYPE' normalized to '$CURR_TYPE' (DB enum) at the writer door." >&2
+fi
+
 # Re-read TYPE from (possibly modified) ENTRY
 TYPE=$(echo "$ENTRY" | jq -r '.type')
 
@@ -478,12 +678,22 @@ TYPE=$(echo "$ENTRY" | jq -r '.type')
 #
 # Computes a stable hash from: project + type + title + date(10) + summary[0:200]
 # Checks against seen-hashes.txt. On collision: skip write, log to duplicates.jsonl.
-# A valid (new) entry passes through and its hash is recorded.
+# Flagging is auto-safe; the full entry payload is preserved in the log.
 # Bash 3.2-compatible: uses shasum (macOS) falling back to sha256sum (Linux).
 # =============================================================================
 
 SEEN_HASHES="$DATA_DIR/seen-hashes.txt"
 DUPLICATES_LOG="$DATA_DIR/duplicates.jsonl"
+
+# --- BEGIN CRITICAL SECTION (dedup check -> journal append -> index -> tracker) ---
+# On lock timeout we proceed UNLOCKED rather than dropping the entry: a rare
+# index race is recoverable (doctor/reconcile); a dropped journal entry is not.
+if ! acquire_scribe_lock; then
+  echo "WARN: writer lock not acquired after ~15s — proceeding without lock to avoid data loss." >&2
+  if type scribe_log_error >/dev/null 2>&1; then
+    scribe_log_error "writer" "lock" "Lock acquisition timed out (~15s) — proceeded unlocked" "entry_id=$SHORT_ID, lock=$LOCK_DIR_PATH"
+  fi
+fi
 
 # Build hash input: project|type|title|date|summary_prefix
 ENTRY_DATE=$(echo "$TIMESTAMP" | cut -c1-10)
@@ -491,29 +701,52 @@ SUMMARY_PREFIX=$(echo "$ENTRY" | jq -r '.summary // empty' | cut -c1-200)
 HASH_INPUT="${PROJECT}|${TYPE}|${TITLE}|${ENTRY_DATE}|${SUMMARY_PREFIX}"
 
 # Compute hash — shasum on macOS, sha256sum on Linux
-CONTENT_HASH=""
 if command -v shasum >/dev/null 2>&1; then
   CONTENT_HASH=$(printf '%s' "$HASH_INPUT" | shasum -a 256 | cut -c1-64)
 elif command -v sha256sum >/dev/null 2>&1; then
   CONTENT_HASH=$(printf '%s' "$HASH_INPUT" | sha256sum | cut -c1-64)
+else
+  # Fallback: no hash tool available; skip dedup rather than blocking
+  CONTENT_HASH=""
 fi
-# If no hash tool is available, CONTENT_HASH stays empty and dedup is skipped
 
 IS_DUPLICATE=false
+HASH_RECORDED=false
 if [ -n "$CONTENT_HASH" ]; then
   touch "$SEEN_HASHES"
   if grep -qF "$CONTENT_HASH" "$SEEN_HASHES" 2>/dev/null; then
     IS_DUPLICATE=true
-    # Log the duplicate (flag only — no data loss, no hard delete)
+    # Log the duplicate with the FULL entry JSON (flag only — no data loss).
+    # Metadata alone preserved a refused entry's summary/learnings/corrections
+    # NOWHERE; .entry keeps the whole payload recoverable. The line is built
+    # by jq (not raw printf interpolation), so quote-bearing titles cannot
+    # produce unparseable duplicates.jsonl lines.
     _DUP_NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-    printf '{"ts":"%s","hash":"%s","entry_id":"%s","project":"%s","type":"%s","title":"%s","date":"%s"}\n' \
-      "$_DUP_NOW" "$CONTENT_HASH" "$ID" "$PROJECT" "$TYPE" "$TITLE" "$ENTRY_DATE" >> "$DUPLICATES_LOG"
+    printf '%s' "$ENTRY" | jq -c \
+      --arg ts "$_DUP_NOW" --arg hash "$CONTENT_HASH" --arg date "$ENTRY_DATE" \
+      '{ts: $ts, hash: $hash, entry_id: .id, project: .project, type: .type,
+        title: .title, date: $date, entry: .}' >> "$DUPLICATES_LOG"
     echo "NOTE: Duplicate entry detected (content-hash match). Logged to duplicates.jsonl — not written to journal." >&2
-  else
-    # Record the hash so future duplicates are caught
-    echo "$CONTENT_HASH" >> "$SEEN_HASHES"
   fi
+  # NOTE: the hash is NOT recorded here. It is appended to seen-hashes.txt
+  # only AFTER the journal append succeeds (see record_content_hash below).
+  # Recording it before the append poisoned seen-hashes.txt when a crash
+  # landed between the two: the retry of a never-persisted entry was refused
+  # as DUPLICATE — unrecoverable data loss.
 fi
+
+# Record the content hash so future duplicates are caught. Called after the
+# entry has actually been persisted (still inside the writer lock, so the
+# check-then-record window stays serialized against other writers). The
+# crash-safe failure direction: a crash before this runs allows a duplicate
+# journal line on a retry (detectable; doctor can repair) instead of silently
+# losing an entry.
+record_content_hash() {
+  if [ -n "$CONTENT_HASH" ] && [ "$HASH_RECORDED" != "true" ]; then
+    echo "$CONTENT_HASH" >> "$SEEN_HASHES"
+    HASH_RECORDED=true
+  fi
+}
 
 # If duplicate, skip all write targets and exit cleanly
 if [ "$IS_DUPLICATE" = "true" ]; then
@@ -544,7 +777,7 @@ if [ "$LOCAL_ENABLED" = "true" ]; then
       type: .type,
       title: .title,
       file: $file,
-      user_id: .user_id,
+      user_id: (.user_id // null),
       summary: (.summary // null),
       decisions: (if (.decisions // []) | length > 0 then .decisions else null end),
       learnings: (if (.learnings // []) | length > 0 then .learnings else null end),
@@ -555,6 +788,10 @@ if [ "$LOCAL_ENABLED" = "true" ]; then
       behavioral: (if (.behavioral // {}) | to_entries | length > 0 then .behavioral else null end)
     } | with_entries(select(.value != null))' \
     >> "$JOURNAL"
+
+  # Only now — after the journal append — is the content hash committed to
+  # seen-hashes.txt.
+  record_content_hash
 
   TARGETS_WRITTEN="file+index"
 fi
@@ -571,28 +808,31 @@ fi
 SUPABASE_OK=false
 if [ "$SUPABASE_ENABLED" = "true" ] && [ -n "$PSQL_BIN" ] && [ -n "$SUPABASE_DB_CONN" ]; then
   # Password comes from .env — expected as SCRIBE_DB_PASSWORD or PGPASSWORD
+  # (see templates/.env.example)
   DB_PASSWORD="${SCRIBE_DB_PASSWORD:-${PGPASSWORD:-}}"
 
   if [ -z "$DB_PASSWORD" ]; then
     echo "WARN: Supabase enabled but no database password found in .env (SCRIBE_DB_PASSWORD or PGPASSWORD)." >&2
   else
-    ESCAPED=$(echo "$ENTRY" | jq -c '{
-      id: .id,
-      timestamp: .timestamp,
-      session_id: .session_id,
-      user_id: .user_id,
-      project: .project,
-      type: .type,
-      title: .title,
-      summary: .summary,
-      decisions: (.decisions // []),
-      learnings: (.learnings // []),
-      corrections: (.corrections // []),
-      metrics: (.metrics // {}),
-      connections: (.connections // {}),
-      growth: (.growth // {}),
-      behavioral: (.behavioral // {})
-    }' | sed "s/'/''/g")
+    ESCAPED=$(echo "$ENTRY" | jq -c \
+      --arg uid "$USER_ID" \
+      '{
+        id: .id,
+        timestamp: .timestamp,
+        session_id: .session_id,
+        user_id: $uid,
+        project: .project,
+        type: .type,
+        title: .title,
+        summary: .summary,
+        decisions: (.decisions // []),
+        learnings: (.learnings // []),
+        corrections: (.corrections // []),
+        metrics: (.metrics // {}),
+        connections: (.connections // {}),
+        growth: (.growth // {}),
+        behavioral: (.behavioral // {})
+      }' | sed "s/'/''/g")
 
     SQL="INSERT INTO journal_entries (id, timestamp, session_id, user_id, project, type, title, summary, decisions, learnings, corrections, metrics, connections, growth, behavioral)
     SELECT
@@ -614,7 +854,8 @@ if [ "$SUPABASE_ENABLED" = "true" ] && [ -n "$PSQL_BIN" ] && [ -n "$SUPABASE_DB_
     FROM jsonb_array_elements('[${ESCAPED}]'::jsonb) AS v
     ON CONFLICT (id) DO NOTHING;"
 
-    if PGPASSWORD="$DB_PASSWORD" "$PSQL_BIN" "$SUPABASE_DB_CONN" -c "$SQL" > /dev/null 2>&1; then
+    # PGCONNECT_TIMEOUT bounds how long the writer lock is held if Supabase is unreachable.
+    if PGPASSWORD="$DB_PASSWORD" PGCONNECT_TIMEOUT="${PGCONNECT_TIMEOUT:-10}" "$PSQL_BIN" "$SUPABASE_DB_CONN" -c "$SQL" > /dev/null 2>&1; then
       SUPABASE_OK=true
       TARGETS_WRITTEN="${TARGETS_WRITTEN:+$TARGETS_WRITTEN+}supabase"
     else
@@ -625,14 +866,14 @@ if [ "$SUPABASE_ENABLED" = "true" ] && [ -n "$PSQL_BIN" ] && [ -n "$SUPABASE_DB_
       # Enqueue for retry — reconcile.sh will replay this queue and close the
       # local<->remote gap. _queued_at records when the failure occurred.
       SYNC_QUEUE="$DATA_DIR/sync-queue.jsonl"
-      _QUEUED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
       echo "$ENTRY" | jq -c \
-        --arg queued_at "$_QUEUED_AT" \
+        --arg uid "$USER_ID" \
+        --arg queued_at "$(date -u +"%Y-%m-%dT%H:%M:%SZ")" \
         '{
           id: .id,
           timestamp: .timestamp,
           session_id: .session_id,
-          user_id: .user_id,
+          user_id: $uid,
           project: .project,
           type: .type,
           title: .title,
@@ -678,7 +919,16 @@ fi
 # 16. UPDATE INDEX.JSON
 # =============================================================================
 
-# Initialize index.json if it doesn't exist
+# Initialize index.json if it doesn't exist — or self-heal if a previous
+# (pre-lock) race left it empty/corrupt. Corrupt content is quarantined, never deleted.
+if [ -f "$INDEX" ] && { [ ! -s "$INDEX" ] || ! jq empty "$INDEX" >/dev/null 2>&1; }; then
+  _CORRUPT_COPY="$INDEX.corrupt-$(date -u +%Y%m%dT%H%M%SZ).$$"
+  mv "$INDEX" "$_CORRUPT_COPY" 2>/dev/null || true
+  echo "WARN: index.json was empty/corrupt — quarantined to $(basename "$_CORRUPT_COPY") and reinitialized." >&2
+  if type scribe_log_error >/dev/null 2>&1; then
+    scribe_log_error "writer" "io" "index.json empty/corrupt — quarantined and reinitialized" "entry_id=$SHORT_ID, quarantine=$(basename "$_CORRUPT_COPY")"
+  fi
+fi
 if [ ! -f "$INDEX" ]; then
   cat > "$INDEX" <<'INIT_INDEX'
 {
@@ -728,8 +978,14 @@ case "$TYPE" in
   feature_shipped) UPDATED_INDEX=$(echo "$UPDATED_INDEX" | jq '.growth_summary.total_features += 1') ;;
   bug_fixed)       UPDATED_INDEX=$(echo "$UPDATED_INDEX" | jq '.growth_summary.total_bugs_fixed += 1') ;;
   learning)        UPDATED_INDEX=$(echo "$UPDATED_INDEX" | jq '.growth_summary.total_learnings += 1') ;;
-  correction)      UPDATED_INDEX=$(echo "$UPDATED_INDEX" | jq '.growth_summary.total_corrections = ((.growth_summary.total_corrections // 0) + 1)') ;;
 esac
+
+# Count corrections in this entry and add to total (counts per-correction, not
+# per-type — an entry of any type can carry corrections[])
+CORRECTION_COUNT=$(echo "$ENTRY" | jq '(.corrections // []) | length')
+if [ "$CORRECTION_COUNT" -gt 0 ] 2>/dev/null; then
+  UPDATED_INDEX=$(echo "$UPDATED_INDEX" | jq --argjson n "$CORRECTION_COUNT" '.growth_summary.total_corrections = ((.growth_summary.total_corrections // 0) + $n)')
+fi
 
 # Update skill distribution
 HAS_SKILL=$(echo "$ENTRY" | jq 'has("growth") and (.growth | has("skill_area")) and (.growth.skill_area | length > 0)')
@@ -740,96 +996,61 @@ if [ "$HAS_SKILL" = "true" ]; then
   ')
 fi
 
-echo "$UPDATED_INDEX" | jq '.' > "$INDEX"
+# Atomic write: tmp file + rename. Never truncate index.json in place — a
+# concurrent reader (or a crash mid-write) must always see a complete file.
+_INDEX_TMP="${INDEX}.tmp.$$"
+if printf '%s\n' "$UPDATED_INDEX" | jq '.' > "$_INDEX_TMP" 2>/dev/null && [ -s "$_INDEX_TMP" ]; then
+  mv -f "$_INDEX_TMP" "$INDEX"
+else
+  rm -f "$_INDEX_TMP" 2>/dev/null || true
+  echo "WARN: index.json update produced invalid JSON — index left unchanged for this entry." >&2
+  if type scribe_log_error >/dev/null 2>&1; then
+    scribe_log_error "writer" "io" "index.json update failed validation — skipped" "entry_id=$SHORT_ID"
+  fi
+fi
 
 # =============================================================================
-# 17. UPDATE CORRECTION TRACKER
+# 17. UPDATE CORRECTION TRACKER (core/track-corrections.py)
+#
+# The entry JSON is piped over STDIN — never substituted into Python source.
+# (The old inline approach crashed on entries containing escaped quotes,
+# silently discarding correction data after the journal write, and was a
+# latent code-exec vector.)
+#
+# Tracker failure is NON-FATAL: the journal write already succeeded, so we
+# log the error and continue — the tracker can be rebuilt from the journal.
 # =============================================================================
 
 HAS_CORRECTIONS=$(echo "$ENTRY" | jq '(.corrections // []) | length > 0')
 if [ "$HAS_CORRECTIONS" = "true" ]; then
   # Initialize tracker if it doesn't exist
   if [ ! -f "$CORRECTION_TRACKER" ]; then
-    echo '{"patterns":{}}' | jq '.' > "$CORRECTION_TRACKER"
+    echo '{"schema_version":1,"patterns":{},"last_updated":""}' > "$CORRECTION_TRACKER"
   fi
 
-  CORRECTIONS=$(echo "$ENTRY" | jq -r '.corrections[]')
-  ENTRY_DATE=$(echo "$TIMESTAMP" | cut -c1-10)
-
-  while IFS= read -r correction; do
-    [ -z "$correction" ] && continue
-
-    # Normalize correction text for matching (lowercase, trim whitespace)
-    CORRECTION_LOWER=$(echo "$correction" | tr '[:upper:]' '[:lower:]')
-
-    # Check each existing pattern for a substring match
-    MATCHED_KEY=""
-    PATTERN_KEYS=$(jq -r '.patterns | keys[]' "$CORRECTION_TRACKER" 2>/dev/null || true)
-
-    while IFS= read -r pkey; do
-      [ -z "$pkey" ] && continue
-      PATTERN_DESC=$(jq -r --arg k "$pkey" '.patterns[$k].description // ""' "$CORRECTION_TRACKER" | tr '[:upper:]' '[:lower:]')
-      # Check if the correction contains the pattern description or vice versa
-      case "$CORRECTION_LOWER" in
-        *"$PATTERN_DESC"*) MATCHED_KEY="$pkey"; break ;;
-      esac
-      case "$PATTERN_DESC" in
-        *"$CORRECTION_LOWER"*) MATCHED_KEY="$pkey"; break ;;
-      esac
-    done <<< "$PATTERN_KEYS"
-
-    if [ -n "$MATCHED_KEY" ]; then
-      # Add occurrence to existing pattern
-      UPDATED_TRACKER=$(jq \
-        --arg k "$MATCHED_KEY" \
-        --arg eid "$SHORT_ID" \
-        --arg edate "$ENTRY_DATE" \
-        --arg ctx "$correction" \
-        --arg now "$NOW" \
-        '
-          .patterns[$k].occurrences += [{"entry_id": $eid, "date": $edate, "context": $ctx}]
-          | .patterns[$k].last_updated = $now
-          | .patterns[$k] as $p
-          | if ($p.occurrences | length) >= 5 and $p.level != "critical" then
-              .patterns[$k].level = "critical"
-              | .patterns[$k].escalated_at = $now
-            elif ($p.occurrences | length) >= 3 and $p.level == "observation" then
-              .patterns[$k].level = "guardrail"
-              | .patterns[$k].escalated_at = $now
-            else .
-            end
-        ' "$CORRECTION_TRACKER")
-      echo "$UPDATED_TRACKER" | jq '.' > "$CORRECTION_TRACKER"
-    else
-      # Create new pattern — generate a slug from the first few words
-      SLUG=$(echo "$correction" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9 ]//g' | awk '{for(i=1;i<=4&&i<=NF;i++) printf "%s-", $i; print ""}' | sed 's/-$//' | cut -c1-40)
-
-      # Ensure slug is unique
-      EXISTING=$(jq -r --arg s "$SLUG" '.patterns | has($s)' "$CORRECTION_TRACKER" 2>/dev/null || echo "false")
-      if [ "$EXISTING" = "true" ]; then
-        SLUG="${SLUG}-${SHORT_ID}"
+  TRACKER_SCRIPT="$SCRIPT_DIR/track-corrections.py"
+  if [ -f "$TRACKER_SCRIPT" ]; then
+    if ! printf '%s' "$ENTRY" | python3 "$TRACKER_SCRIPT" "$CORRECTION_TRACKER"; then
+      echo "WARN: correction-tracker update failed — journal entry is safe; tracker skipped." >&2
+      if type scribe_log_error >/dev/null 2>&1; then
+        scribe_log_error "writer" "runtime" "track-corrections.py failed — tracker not updated" "entry_id=$SHORT_ID"
       fi
-
-      UPDATED_TRACKER=$(jq \
-        --arg k "$SLUG" \
-        --arg desc "$correction" \
-        --arg eid "$SHORT_ID" \
-        --arg edate "$ENTRY_DATE" \
-        --arg now "$NOW" \
-        '
-          .patterns[$k] = {
-            "description": $desc,
-            "occurrences": [{"entry_id": $eid, "date": $edate, "context": $desc}],
-            "level": "observation",
-            "escalated_at": null,
-            "resolved": false,
-            "last_updated": $now
-          }
-        ' "$CORRECTION_TRACKER")
-      echo "$UPDATED_TRACKER" | jq '.' > "$CORRECTION_TRACKER"
     fi
-  done <<< "$CORRECTIONS"
+  else
+    echo "WARN: $TRACKER_SCRIPT not found — correction tracker not updated." >&2
+    if type scribe_log_error >/dev/null 2>&1; then
+      scribe_log_error "writer" "config" "track-corrections.py missing — tracker not updated" "entry_id=$SHORT_ID"
+    fi
+  fi
 fi
+
+# Fallback for installs with local storage disabled: by this point the entry
+# has been persisted to Supabase or the sync queue, so the hash is safe to
+# record. No-op when 13b already recorded it (HASH_RECORDED guard).
+record_content_hash
+
+# --- END CRITICAL SECTION ---
+release_scribe_lock
 
 # =============================================================================
 # 18. GENERATE RECEIPT
@@ -864,6 +1085,7 @@ if [ "$SESSION_COUNT" -lt 5 ]; then
     feedback_received)  echo "  Purpose: Records external input — correlates feedback with behavioral changes over time" ;;
     milestone)          echo "  Purpose: Marks significant achievements — anchors your growth timeline" ;;
     reflection)         echo "  Purpose: Session summary — the Reader uses these for longitudinal analysis" ;;
+    essence)            echo "  Purpose: The soul — who you/the work/the team truly are, in your own words. Read first, never flattened." ;;
     *)                  echo "  Purpose: Custom entry type — tracked in your journal for future reference" ;;
   esac
 
@@ -876,6 +1098,17 @@ else
   if [ "$DRIVE_PENDING" = true ]; then
     echo "  (Drive sync pending)"
   fi
+fi
+
+# =============================================================================
+# 19. POST-WRITE HOOK: SESSION BRIEF (non-fatal; no-op until core/brief.py exists)
+# =============================================================================
+
+# Pass --data-dir so pointer.json installs brief the SAME journal this write
+# went to. brief.py's own default resolution ($SCRIBE_DATA_PATH, else the
+# default data dir) could otherwise generate briefs from the wrong journal.
+if [ -f "$SCRIPT_DIR/brief.py" ]; then
+  python3 "$SCRIPT_DIR/brief.py" --project "$PROJECT" --data-dir "$DATA_DIR" >/dev/null 2>&1 || true
 fi
 
 exit 0

@@ -1,0 +1,331 @@
+{
+  "schema_version": 1,
+  "vocabulary_version": 1,
+  "description": "Controlled vocabulary for correction-tracker.json patterns. core/track-corrections.py classifies every journal correction against these ~10 named patterns; anything unmatched lands in 'uncategorized' with its text preserved. New slugs are NEVER minted automatically — add a pattern here (core/taxonomy.py add-pattern) to grow the vocabulary. The installer copies this file to DATA_DIR/canonical/correction-patterns.json; that copy is yours to tune.",
+  "matching_rules": {
+    "order": "Pattern list order is semantic: first match wins. Alias mentions (exact slug named in the correction text) are checked first across all patterns, then matchers are tried pattern-by-pattern in list order.",
+    "matchers": "Each matcher is a case-insensitive regular expression applied to the lowercased correction text; a matcher that fails to compile falls back to plain substring matching.",
+    "aliases": "Matched as substrings of the lowercased text, both hyphenated ('act-before-research') and space-separated ('act before research'). Legacy tracker slugs can be listed as aliases so old PATTERN RECURRENCE references still resolve.",
+    "escalate": "Patterns with escalate=false stay at level 'observation' regardless of occurrence count (used by the catch-all so self-healing never proposes interventions for 'uncategorized').",
+    "calibration": "The shipped matcher set was calibrated against a real-world journal corpus of 350+ corrections (~30% uncategorized, ship-before-verify and act-before-research leading). Tune the matchers against your own corpus over time."
+  },
+  "patterns": [
+    {
+      "slug": "pagination-skip",
+      "definition": "Queries or batch jobs run without pagination, silently truncating at row limits (the known 1000-row Supabase default).",
+      "aliases": [
+        "pagination-skip"
+      ],
+      "matchers": [
+        "paginat",
+        "1000 rows?",
+        "1,000 rows?",
+        "row limit",
+        "truncat\\w* at 1000"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "destructive-without-backup",
+      "definition": "Destructive actions (delete, overwrite, move-then-remove) taken before verifying or backing up — violations of verify-before-destroy.",
+      "aliases": [
+        "destructive-without-backup",
+        "destructive-action-without-backup",
+        "verify-before-destroy"
+      ],
+      "matchers": [
+        "accidentally deleted",
+        "delet\\w* .{0,40}(before|without) verifying",
+        "without (a )?backup",
+        "no backup",
+        "rsync-then-rm",
+        "overwrote clipboard",
+        "overwrot\\w* .{0,25}(data|content|file|notes|original)",
+        "\\bwiped\\b",
+        "data loss",
+        "removed the original",
+        "deleted the original"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "wrong-target",
+      "definition": "Work applied to the wrong target — wrong Supabase project, directory, branch, URL, file, table, or UI element.",
+      "aliases": [
+        "wrong-target",
+        "wrong-target-project"
+      ],
+      "matchers": [
+        "wrong (supabase|project|database|schema|branch|repo|director\\w*|folder|url|file|location|account|table|embed\\w*|element|endpoint)",
+        "clicked wrong",
+        "on the wrong",
+        "in wrong location",
+        "content in wrong",
+        "migration to .{0,40}instead of",
+        "instead of .{0,40}(project|folder|director)",
+        "pasted into .{0,40}instead of"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "connection-config",
+      "definition": "Environment, credential, or wiring mistakes — wrong secrets/keys/connection strings, hardcoded passwords, missing auth headers, misconfigured services.",
+      "aliases": [
+        "connection-config",
+        "connection-config-failures"
+      ],
+      "matchers": [
+        "credential",
+        "\\.env\\b",
+        "env var",
+        "environment variable",
+        "api.?key",
+        "anon.?key",
+        "service.?role",
+        "access.?token",
+        "auth token",
+        "signing secret",
+        "webhook.?secret",
+        "\\bsecret\\b",
+        "connection string",
+        "\\bpooler\\b",
+        "sslmode",
+        "hardcoded.{0,30}password",
+        "password.{0,30}hardcoded",
+        "publishable key",
+        "authorization header",
+        "\\bjwt\\b",
+        "api_secret",
+        "wrong (key|token|credential)",
+        "unset in the shell",
+        "misconfigur",
+        "\\bsso\\b",
+        "gitignore",
+        "default timeout"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "silent-failure",
+      "definition": "Errors swallowed, masked, or surfaced nowhere users look — failures that present as nothing instead of as errors.",
+      "aliases": [
+        "silent-failure",
+        "silent-failure-error-handling"
+      ],
+      "matchers": [
+        "silent",
+        "swallow",
+        "\\[object object\\]",
+        "string\\(err\\)",
+        "suppress\\w* .{0,30}(error|warning|failure|exception)",
+        "(error|warning|failure|exception)s? .{0,30}suppress",
+        "\\bmasked\\b",
+        "\\bmasking\\b",
+        "hid the .{0,30}error",
+        "error\\w* .{0,30}hidden",
+        "exit code (of )?0",
+        "exited 0",
+        "no error (shown|surfaced|raised)",
+        "missed .{0,20}sync",
+        "never persisted"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "voice-drift",
+      "definition": "Copy or tone that violates the user's voice and brand rules — off-brand punctuation, corny/cocky/selfish framing, off-message content.",
+      "aliases": [
+        "voice-drift"
+      ],
+      "matchers": [
+        "em-dash",
+        "em dash",
+        "\\bcorny\\b",
+        "\\bgoofy\\b",
+        "\\bcocky\\b",
+        "\\bjargon\\b",
+        "\\btone\\b",
+        "off-message",
+        "\\bselfish\\b",
+        "\\bboast\\w*\\b",
+        "read like marketing",
+        "marketing about",
+        "framed .{0,40} as ",
+        "referred to .{0,40} as ",
+        "devalues the work",
+        "positioning"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "overclaim-fabricate",
+      "definition": "Assertions without evidence — inflated or invented claims, fabricated content or numbers, false positives/negatives stated as fact.",
+      "aliases": [
+        "overclaim-fabricate",
+        "overclaim"
+      ],
+      "matchers": [
+        "hallucinat",
+        "fabricat",
+        "\\bfake\\b",
+        "\\binvented\\b",
+        "over-?claim",
+        "over-?stated?",
+        "over-?assert\\w*",
+        "under-?stated?",
+        "\\bclaimed\\b",
+        "\\basserted\\b",
+        "\\bdeclared\\b",
+        "at face value",
+        "self-report",
+        "as fact",
+        "false positive",
+        "false negative",
+        "false .{0,40}claim",
+        "\\bconflat",
+        "cries wolf",
+        "but actual",
+        "reported .{0,50}when",
+        "\\bconcluded\\b",
+        "over-narration",
+        "\\bimplying\\b",
+        "corrected from",
+        "\\bwas wrong\\b",
+        "(said|reported) .{0,60}wrong"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "overengineering",
+      "definition": "Building more than was asked or needed — scope creep, from-scratch rebuilds over layering, complexity where a simpler existing path was available.",
+      "aliases": [
+        "overengineering",
+        "over-engineering",
+        "scope-creep-feature-addition",
+        "scope-creep"
+      ],
+      "matchers": [
+        "over-?engineer",
+        "over-?built",
+        "over-?build",
+        "scope[- ]?cre\\w+",
+        "unnecessary complexity",
+        "over-?complicat",
+        "from scratch instead of",
+        "instead of layering",
+        "ego of",
+        "feature addition",
+        "when .{0,50}could have"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "ship-before-verify",
+      "definition": "Declaring work done, shipped, or correct without testing it — build-passes or agent-say-so accepted in place of observed runtime evidence.",
+      "aliases": [
+        "ship-before-verify",
+        "shipping-before-verifying"
+      ],
+      "matchers": [
+        "without testing",
+        "without verifying",
+        "before verifying",
+        "instead of verifying",
+        "without browser",
+        "browser verification",
+        "without .{0,30}test",
+        "untested",
+        "never tested",
+        "did not test",
+        "didn'?t test",
+        "before shipping",
+        "shipped .{0,50}without",
+        "pushed .{0,50}without",
+        "committed without",
+        "deployed .{0,40}without",
+        "build pass",
+        "production-build-test",
+        "verification\\w* .{0,20}skipped",
+        "skipped .{0,30}verif",
+        "verification",
+        "not my own testing",
+        "should have caught",
+        "should have tested",
+        "without executing",
+        "without running",
+        "but not functionality",
+        "user (flagged|caught|had to)",
+        "caught by (the|a) (user|review\\w*|teammate)",
+        "caught only by",
+        "user'?s (phone|device|machine)",
+        "\\bshipped\\b",
+        "went out in a screenshot",
+        "before i caught",
+        "production incident",
+        "\\boutage\\b",
+        "without evidence"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "act-before-research",
+      "definition": "Acting on assumptions without first reading the existing code, schema, spec, skill, or source of truth — commonly the #1 tracked pattern.",
+      "aliases": [
+        "act-before-research",
+        "act-before-fully-checking",
+        "research gate",
+        "research-gate"
+      ],
+      "matchers": [
+        "research",
+        "without reading",
+        "without checking",
+        "without confirming",
+        "without first",
+        "without inspecting",
+        "without comparing",
+        "without understanding",
+        "without realizing",
+        "before reading",
+        "before checking",
+        "before confirming",
+        "before diagnosing",
+        "before realizing",
+        "initially tried",
+        "should have (read|checked|researched|run|confirmed|asked|counted|verified|looked|known|scoped|done|pinned)",
+        "should have been asked",
+        "didn'?t (read|check|research|ask|confirm)",
+        "did not (read|check|review|confirm|search|recall|verify)",
+        "never (read|checked)",
+        "\\bassum",
+        "instead of reading",
+        "instead of checking",
+        "stale user memory",
+        "outdated training",
+        "training data",
+        "read it first",
+        "talking out",
+        "before making assumptions",
+        "before querying",
+        "not checking",
+        "misunderst",
+        "extrapolated",
+        "skill-defined",
+        "confirmed before",
+        "user meant",
+        "not what (i|he|she|the user) (meant|wanted)",
+        "own .{0,15}synthesis",
+        "up front"
+      ],
+      "escalate": true
+    },
+    {
+      "slug": "uncategorized",
+      "definition": "Explicit catch-all for corrections matching no named pattern — the correction text is preserved in full for later manual classification; never escalates and never mints new slugs.",
+      "aliases": [],
+      "matchers": [],
+      "escalate": false,
+      "catch_all": true
+    }
+  ]
+}

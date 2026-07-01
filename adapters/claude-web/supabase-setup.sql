@@ -24,8 +24,13 @@ CREATE TABLE journal_entries (
     'tool_discovered',
     'feedback_received',
     'milestone',
-    'reflection'
+    'reflection',
+    'essence'
   )),
+  -- NOTE: if you mint a new type with core/taxonomy.py add-type, this CHECK
+  -- constraint must be updated too (add-type prints the SQL to run). Until
+  -- then, remote inserts of the new type fail and sit in sync-queue.jsonl;
+  -- core/reconcile.sh replays them once the constraint is fixed.
   title TEXT NOT NULL CHECK (char_length(title) <= 120),
   summary TEXT NOT NULL,
   decisions JSONB DEFAULT '[]'::jsonb,

@@ -1,11 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "scribe-entry-v1",
+  "$id": "scribe-entry-v2",
   "title": "Scribe Journal Entry",
   "description": "Schema for Scribe session journal entries. Additive-only: new fields may be added, existing fields are never removed or renamed.",
-  "schema_version": 1,
+  "schema_version": 2,
   "type": "object",
-  "required": ["id", "timestamp", "session_id", "user_id", "project", "type", "title", "summary"],
+  "required": [
+    "id",
+    "timestamp",
+    "session_id",
+    "project",
+    "type",
+    "title",
+    "summary"
+  ],
   "properties": {
     "id": {
       "type": "string",
@@ -23,11 +31,11 @@
     },
     "user_id": {
       "type": "string",
-      "description": "Owner identifier — links entries to the user who created them"
+      "description": "Owner identifier — links entries to the user who created them. Optional at the writer door: defaults to the config.json owner."
     },
     "project": {
       "type": "string",
-      "description": "Which project this entry belongs to — validated against user's config, not a hardcoded enum"
+      "description": "Which project this entry belongs to — validated against canonical/projects.json (or the user's config), not a hardcoded enum"
     },
     "type": {
       "type": "string",
@@ -42,9 +50,10 @@
         "tool_discovered",
         "feedback_received",
         "milestone",
-        "reflection"
+        "reflection",
+        "essence"
       ],
-      "description": "Category of journal entry. Core types listed; users may extend via config."
+      "description": "Category of journal entry. Core types listed; users may extend via core/taxonomy.py add-type. 'essence' = soul/voice/relationship moments captured in the person's own words, not flattened to work."
     },
     "title": {
       "type": "string",
@@ -57,28 +66,54 @@
     },
     "decisions": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Decisions made: the choice, alternatives considered, reasoning, and constraints."
     },
     "learnings": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Things genuinely learned — the setup, the surprise, the principle, the application."
     },
     "corrections": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Mistakes made: observable symptom, root cause, fix applied, prevention rule, recurrence flag."
     },
     "metrics": {
       "type": "object",
       "properties": {
-        "files_changed": { "type": "integer", "minimum": 0 },
-        "lines_added": { "type": "integer", "minimum": 0 },
-        "lines_removed": { "type": "integer", "minimum": 0 },
-        "duration_minutes": { "type": "integer", "minimum": 0 },
-        "agents_dispatched": { "type": "integer", "minimum": 0 },
-        "version_shipped": { "type": ["string", "null"] }
+        "files_changed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lines_added": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "lines_removed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duration_minutes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "agents_dispatched": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "version_shipped": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
       },
       "additionalProperties": false
     },
@@ -87,17 +122,23 @@
       "properties": {
         "builds_on": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "IDs of related earlier entries"
         },
         "related_projects": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Other projects this connects to"
         },
         "tags": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Searchable tags — lowercase, specific"
         }
       },
@@ -112,12 +153,23 @@
         },
         "complexity": {
           "type": "string",
-          "enum": ["routine", "moderate", "challenging", "breakthrough"],
+          "enum": [
+            "routine",
+            "moderate",
+            "challenging",
+            "breakthrough",
+            "unspecified"
+          ],
           "description": "Honest complexity assessment. routine = done this before. breakthrough = genuinely new territory."
         },
         "autonomy": {
           "type": "string",
-          "enum": ["guided", "collaborative", "independent"],
+          "enum": [
+            "guided",
+            "collaborative",
+            "independent",
+            "unspecified"
+          ],
           "description": "Who drove the decisions. guided = AI-led. collaborative = real back-and-forth. independent = user drove."
         },
         "notes": {
@@ -133,45 +185,114 @@
       "properties": {
         "drive_state": {
           "type": "string",
-          "enum": ["building", "firefighting", "avoiding", "maintaining", "exploring", "closing"],
-          "description": "What mode the user is operating in."
+          "enum": [
+            "building",
+            "firefighting",
+            "avoiding",
+            "maintaining",
+            "exploring",
+            "closing",
+            "unspecified"
+          ],
+          "description": "What mode the user is operating in — building (creating new), firefighting (reacting to problems), avoiding (deferring uncomfortable tasks), maintaining (operational upkeep), exploring (researching/learning), closing (finishing and delivering)"
         },
         "energy": {
           "type": "string",
-          "enum": ["high", "steady", "low", "scattered"],
-          "description": "Observable energy level."
+          "enum": [
+            "high",
+            "steady",
+            "low",
+            "scattered",
+            "unspecified"
+          ],
+          "description": "Observable energy level — high (rapid decisions, enthusiasm), steady (focused and methodical), low (delayed responses, shorter messages), scattered (context-switching, tangents)"
         },
         "triggers": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "What prompted the current behavior — be specific."
+          "items": {
+            "type": "string"
+          },
+          "description": "What prompted the current behavior — external pressure, intrinsic motivation, guilt, excitement, deadline, boredom, client feedback"
         },
         "avoidance_signals": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Tasks mentioned but deferred."
+          "items": {
+            "type": "string"
+          },
+          "description": "Tasks mentioned but deferred, emails referenced but not sent, scope creep into new features instead of finishing current work"
         },
         "language_markers": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Notable phrases that reveal mindset."
+          "items": {
+            "type": "string"
+          },
+          "description": "Notable phrases that reveal mindset — momentum markers, guilt-driven phrasing, high-confidence commands, pivoting/distracted interjections"
         },
         "cognitive_load": {
           "type": "string",
-          "enum": ["focused", "moderate", "overloaded"],
-          "description": "How many threads the user is juggling."
+          "enum": [
+            "focused",
+            "moderate",
+            "overloaded",
+            "unspecified"
+          ],
+          "description": "How many threads the user is juggling — focused (1 project deep), moderate (2-3 projects), overloaded (4+ or rapid switching)"
         },
         "pattern_flags": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Recurring behavioral patterns observed."
+          "items": {
+            "type": "string"
+          },
+          "description": "Recurring behavioral patterns observed — 'shipping-before-verifying', 'infrastructure-over-revenue', 'new-project-over-finishing', 'email-avoidance', 'scope-creep-when-energized'"
         },
         "notes": {
           "type": "string",
-          "description": "Free-form behavioral observation — what a psychologist would note."
+          "description": "Free-form behavioral observation — what a psychologist would note watching this session"
+        },
+        "professional_development": {
+          "type": "object",
+          "description": "Observations against 9 professional developer benchmarks. Only populate fields relevant to this session.",
+          "properties": {
+            "lookup_comfort": {
+              "type": "string",
+              "description": "Did the user look things up freely or work around knowledge gaps silently?"
+            },
+            "review_adoption": {
+              "type": "string",
+              "description": "Did features go through show-before-build, or straight to implementation?"
+            },
+            "reading_before_writing": {
+              "type": "string",
+              "description": "Did the session start with reading existing code, or jump to building?"
+            },
+            "context_switches": {
+              "type": "integer",
+              "description": "Number of project switches this session"
+            },
+            "build_vs_buy": {
+              "type": "string",
+              "description": "Were existing tools/libraries checked before building from scratch?"
+            },
+            "commit_discipline": {
+              "type": "string",
+              "description": "Small+frequent commits with good messages, or large batch commits?"
+            },
+            "testing_at_boundaries": {
+              "type": "string",
+              "description": "Tested on target device/viewport, or only build-tested?"
+            },
+            "debt_awareness": {
+              "type": "string",
+              "description": "Was technical debt taken intentionally with documentation, or accumulated accidentally?"
+            },
+            "imposter_signals": {
+              "type": "string",
+              "description": "Language showing calibration ('I dont know this yet' = healthy) vs self-criticism ('I should know this' = imposter syndrome)"
+            }
+          }
         }
       },
-      "additionalProperties": false
+      "additionalProperties": true
     },
     "learning_story": {
       "type": "object",
@@ -179,7 +300,9 @@
       "properties": {
         "attempts": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "What was tried, in order, including failures."
         },
         "thinking": {

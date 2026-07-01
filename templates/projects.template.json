@@ -1,0 +1,13 @@
+{
+  "_comment": "Canonical project registry — the installer copies this to DATA_DIR/canonical/projects.json. An EMPTY projects[] list is 'open mode': the writer accepts any project name. Once at least one project is listed (mint with: python3 core/taxonomy.py add-project <name>), the writer enforces the registry — unknown projects are normalized to 'meta', logged to normalizations.jsonl, and queued to canonical/taxonomy-suggestions.jsonl for deliberate minting. Aliases map alternate spellings to canonical names and are resolved before validation.",
+  "_example": {
+    "projects": ["my-app", "client-site", "meta"],
+    "aliases": {
+      "MyApp": "my-app",
+      "my_app": "my-app",
+      "general": "meta"
+    }
+  },
+  "projects": [],
+  "aliases": {}
+}

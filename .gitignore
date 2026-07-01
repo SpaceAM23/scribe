@@ -8,6 +8,23 @@ revisions/
 backups/
 .scribe-lock
 pointer.json
+briefs/
+canonical/
+correction-tracker.json
+seen-hashes.txt
+duplicates.jsonl
+normalizations.jsonl
+errors.jsonl
+sync-queue.jsonl
+sync-dead-letter.jsonl
+taxonomy-suggestions*.jsonl
+doctor-repairs-*.json
+handoff.md
+nexus.json
+team-config.json
+.writer.lock/
+*.bak-*
+*.corrupt-*
 
 # Credentials
 .env
