@@ -76,3 +76,7 @@ Environment: macOS, `/bin/bash 3.2.57`, scratch data dirs via `SCRIBE_DATA_PATH`
 - **Instance writer's no-config Supabase fallback block** — was Apollo's connection string; the public writer requires config.
 - **`tests/test_backfill_dryrun.sh`, `test_dedup.sh`, `test_enum_enforcement.sh`, `test_project_taxonomy.sh`, `test_sync_queue.sh`, `test_heal.py`, `test_trend.py`** — not in the requested port list; several target instance-only tooling (backfill) or predate the overhaul. Candidates for a follow-up test-suite port.
 - **Claude Desktop MCP adapter update for schema v2** (`essence` type awareness in `index.ts`) — the adapter validates loosely and continues to work; noting as follow-up rather than making untested TypeScript changes.
+
+## Addendum — 2026-07-11
+
+- `core/writer.sh` section 20: post-write **doctor `--check`** hook (parity with the live instance). Read-only integrity verification on every write — silent when clean, one-line nudge on drift; repairs stay a deliberate human `--fix`. Without this, `doctor.py` shipped but never ran. Validated: `bash -n` clean, `tests/test_concurrent_writers.sh` ALL PASS.

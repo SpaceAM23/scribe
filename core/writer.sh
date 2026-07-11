@@ -1111,4 +1111,23 @@ if [ -f "$SCRIPT_DIR/brief.py" ]; then
   python3 "$SCRIPT_DIR/brief.py" --project "$PROJECT" --data-dir "$DATA_DIR" >/dev/null 2>&1 || true
 fi
 
+# =============================================================================
+# 20. POST-WRITE HOOK: DOCTOR INTEGRITY CHECK (non-fatal; no-op until core/doctor.py exists)
+#
+# Runs when Scribe runs, so derived state can never rot silently. --check
+# mutates NOTHING (Scribe proposes, never self-changes): it verifies entry ids,
+# seen-hashes.txt, and index.json against the journal. Silent when clean; on
+# drift it surfaces a one-line nudge. Repairs stay a deliberate human --fix.
+# Runs after the writer lock is released and the receipt is printed, so it
+# never blocks the write or delays the receipt.
+# =============================================================================
+if [ -f "$SCRIPT_DIR/doctor.py" ]; then
+  if ! python3 "$SCRIPT_DIR/doctor.py" --check --data-dir "$DATA_DIR" >/dev/null 2>&1; then
+    echo "SCRIBE DOCTOR: derived-state drift detected — repair with: python3 \"$SCRIPT_DIR/doctor.py\" --fix" >&2
+    if type scribe_log_error &>/dev/null; then
+      scribe_log_error "writer" "integrity" "doctor --check found drift after write" "entry_id=$SHORT_ID"
+    fi
+  fi
+fi
+
 exit 0
