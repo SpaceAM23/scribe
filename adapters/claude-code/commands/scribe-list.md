@@ -75,9 +75,9 @@ SCRIBE ENTRIES (<total_matching> matching, showing <displayed>)
 
 ID          DATE        PROJECT      TYPE             TITLE
 --------    ----------  -----------  ---------------  ----------------------------------
-a1b2c3d4    2026-05-08  blackfin     decision_made    Adopted medallion architecture
-e5f6g7h8    2026-05-09  blackfin     correction       Missed RLS policy on vendor table
-i9j0k1l2    2026-05-10  naturejab    feature_shipped  Shipped asset gallery component
+a1b2c3d4    2026-05-08  restaurant     decision_made    Adopted medallion architecture
+e5f6g7h8    2026-05-09  restaurant     correction       Missed RLS policy on vendor table
+i9j0k1l2    2026-05-10  nonprofit    feature_shipped  Shipped asset gallery component
 ```
 
 Rules:

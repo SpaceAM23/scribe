@@ -13,7 +13,7 @@ All storage uses Google Drive via the built-in MCP integration. You have no file
 On first use, ask the user for:
 
 1. **Name** and **role** (e.g., "Apollo, COO / Project Manager")
-2. **Projects** they work on (e.g., "blackfin, naturejab")
+2. **Projects** they work on (e.g., "restaurant, nonprofit")
 3. **User ID** -- a short identifier (e.g., "apollo"). Used in all entries.
 4. **Google Drive folder** -- the user should have already created a folder called "Scribe" in their Drive. Confirm you can access it via Drive MCP.
 5. **Behavioral tracking** -- opt-in. If yes, you will populate behavioral observation fields. If no, you will omit them entirely.

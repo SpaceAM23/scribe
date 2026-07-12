@@ -27,9 +27,9 @@ Read two files:
 
 Extract from the user's message:
 - **Project name** (required) — the project to share context about
-- **Receiver name** (required, via `--to <name>` or natural language like "share with Shawn")
+- **Receiver name** (required, via `--to <name>` or natural language like "share with the operator")
 
-If either is missing, ask the user. Example: "Which project and who should I generate the packet for? Usage: /scribe-share blackfin --to Shawn"
+If either is missing, ask the user. Example: "Which project and who should I generate the packet for? Usage: /scribe-share restaurant --to operator"
 
 Validate the project name against the user's config. If the project is not in config, warn but proceed (entries may still exist for it).
 

@@ -92,7 +92,7 @@ CORRECTIONS (found 4)
            Source: one data loss incident with detailed post-mortem
 
 PROJECTS IDENTIFIED
-  blackfin, awg-wms, naturejab
+  restaurant, field-ops, nonprofit
 
 PATTERNS
   - Research before building reduces corrections

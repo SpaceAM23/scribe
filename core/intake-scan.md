@@ -209,7 +209,7 @@ Reasonable inference from available data, but not independently confirmed. The s
 Examples:
 - User discussed React hooks in 4 conversations but no React projects found in git — likely uses React but depth is uncertain
 - User appears to work primarily in evenings based on git timestamps — but sample size is small or timezone is ambiguous
-- Collaborator "Bilal" mentioned in 6 conversations as handling design — likely a design partner, but the exact relationship isn't stated
+- A collaborator mentioned in 6 conversations as handling design — likely a design partner, but the exact relationship isn't stated
 
 ### LOW
 
@@ -217,7 +217,7 @@ Single mention, weak signal, or ambiguous data. Including it because it might be
 
 Examples:
 - User mentioned Docker once when discussing deployment — might use it regularly, might have been exploring
-- A collaborator named "Julian" appears in one conversation — role and relationship unclear
+- Another collaborator appears in one conversation — role and relationship unclear
 - User expressed frustration with testing in one session — could be a pattern or a bad day
 
 ---

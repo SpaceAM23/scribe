@@ -85,7 +85,7 @@ When you're ready for feedback, ask naturally:
 Share context between collaborators through trusted handshakes:
 
 ```
-scribe share blackfin --to Shawn
+scribe share restaurant --to operator
 ```
 
 A packet carries four layers of relational intelligence:

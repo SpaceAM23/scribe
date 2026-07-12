@@ -48,12 +48,12 @@ Display as a list:
 SCRIBE INBOX
 =============
 
-1. apollo-blackfin-2026-05-10.packet.json
-   From: Apollo | Project: blackfin | Date: 2026-05-10
+1. apollo-restaurant-2026-05-10.packet.json
+   From: Apollo | Project: restaurant | Date: 2026-05-10
    Contents: 3 decisions, 1 active work, 2 learnings, 1 learning story, 1 open question
 
-2. bilal-naturejab-2026-05-08.packet.json
-   From: Bilal | Project: naturejab | Date: 2026-05-08
+2. designer-nonprofit-2026-05-08.packet.json
+   From: the designer | Project: nonprofit | Date: 2026-05-08
    Contents: 2 decisions, 0 active work, 1 learning, 0 learning stories, 0 open questions
 
 Commands:

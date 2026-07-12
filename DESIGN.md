@@ -515,7 +515,7 @@ The user decides whether to create it. Scribe doesn't auto-generate skills.
 
 A Scribe packet is a **trusted handshake** between two Scribe users working on shared projects. It's not a data export — it's a relational introduction that lets each person's Claude understand the other person, their role, how they think, how they work, and how the two should interact to serve shared goals.
 
-When Apollo sends a packet to Shawn, Shawn's Claude doesn't just learn "Apollo made these architectural decisions." It learns: "Apollo is the systems architect on this project. He thinks in data pipelines and patterns. He values operational accuracy over speed. When his decisions arrive, they're well-reasoned but may not account for front-of-house realities — that's where Shawn's perspective is the check."
+When Apollo sends a packet to the operator, the operator's Claude doesn't just learn "Apollo made these architectural decisions." It learns: "Apollo is the systems architect on this project. He thinks in data pipelines and patterns. He values operational accuracy over speed. When his decisions arrive, they're well-reasoned but may not account for front-of-house realities — that's where the operator's perspective is the check."
 
 ### 10.2 What Gets Shared vs. What Stays Private
 
@@ -557,30 +557,30 @@ When Apollo sends a packet to Shawn, Shawn's Claude doesn't just learn "Apollo m
   },
 
   "receiver": {
-    "name": "Shawn",
+    "name": "The operator",
     "known_role": "Owner / Operator",
-    "notes": "Shawn runs the restaurant day-to-day. His perspective is operational reality — if a feature doesn't work during a Friday dinner rush, it doesn't work."
+    "notes": "The operator runs the restaurant day-to-day. His perspective is operational reality — if a feature doesn't work during a Friday dinner rush, it doesn't work."
   },
 
   "relationship": {
-    "shared_projects": ["blackfin"],
-    "how_we_work_together": "Apollo handles architecture, backend, data pipeline, and technical direction. Shawn handles operations, testing in production, and front-of-house feedback. Decisions are collaborative but Shawn has final say on anything that touches the floor.",
+    "shared_projects": ["restaurant"],
+    "how_we_work_together": "Apollo handles architecture, backend, data pipeline, and technical direction. The operator handles operations, testing in production, and front-of-house feedback. Decisions are collaborative but the operator has final say on anything that touches the floor.",
     "trust_level": "full",
     "collaboration_since": "2026-01",
-    "interaction_patterns": "Async most of the time. Apollo ships features, Shawn tests in the restaurant. Feedback cycles are 1-3 days.",
+    "interaction_patterns": "Async most of the time. Apollo ships features, the operator tests in the restaurant. Feedback cycles are 1-3 days.",
     "shared_vocabulary": ["jacket", "medallion", "bronze/silver/gold"],
-    "tension_points": "Apollo sometimes over-engineers for future flexibility. Shawn needs things that work now. Both perspectives are valid — the tension produces better decisions."
+    "tension_points": "Apollo sometimes over-engineers for future flexibility. The operator needs things that work now. Both perspectives are valid — the tension produces better decisions."
   },
 
   "for_receiver_claude": {
-    "integration_guidance": "When Apollo sends architectural decisions, adopt them unless Shawn has operational context that contradicts them. If there's a conflict, surface it explicitly — don't silently override either person.",
-    "watch_for": "Apollo's decisions are systems-level. Shawn's reality is kitchen-level. If a decision seems impractical for daily ops, flag it as a question back to Apollo rather than just implementing it.",
-    "how_to_use_this_context": "This isn't a directive — it's background. Use it to make better suggestions, catch potential conflicts early, and help Shawn communicate effectively with Apollo when needed.",
-    "when_to_reference": "When Shawn is working on shared project code, when he asks about a decision Apollo made, when there's an architectural question Apollo has already answered, or when Shawn's work would benefit from knowing Apollo's current direction."
+    "integration_guidance": "When Apollo sends architectural decisions, adopt them unless the operator has operational context that contradicts them. If there's a conflict, surface it explicitly — don't silently override either person.",
+    "watch_for": "Apollo's decisions are systems-level. The operator's reality is kitchen-level. If a decision seems impractical for daily ops, flag it as a question back to Apollo rather than just implementing it.",
+    "how_to_use_this_context": "This isn't a directive — it's background. Use it to make better suggestions, catch potential conflicts early, and help the operator communicate effectively with Apollo when needed.",
+    "when_to_reference": "When the operator is working on shared project code, when he asks about a decision Apollo made, when there's an architectural question Apollo has already answered, or when the operator's work would benefit from knowing Apollo's current direction."
   },
 
   "project_context": {
-    "project": "blackfin",
+    "project": "restaurant",
     "description": "Restaurant management platform — inventory, recipes, cost tracking, vendor management",
     "current_phase": "Active development, production use",
     "stack": "Next.js 15.5, React 19, TypeScript, Tailwind 4, Supabase",
@@ -639,7 +639,7 @@ When Apollo sends a packet to Shawn, Shawn's Claude doesn't just learn "Apollo m
   ],
 
   "open_questions": [
-    "Shawn — are you tracking vendor price changes per receipt or per catalog update?",
+    "The operator — are you tracking vendor price changes per receipt or per catalog update?",
     "Do we need a shared products table across modules, or keep inventory and recipes separate?"
   ]
 }
@@ -650,10 +650,10 @@ When Apollo sends a packet to Shawn, Shawn's Claude doesn't just learn "Apollo m
 ```
 ~/Desktop/Scribe/
   inbox/                                    <- Received packets
-    apollo-blackfin-2026-05-10.packet.json
-    bilal-naturejab-2026-05-08.packet.json
+    apollo-restaurant-2026-05-10.packet.json
+    designer-nonprofit-2026-05-08.packet.json
   outbox/                                   <- Sent packets (archive)
-    shawn-blackfin-2026-05-10.packet.json
+    operator-restaurant-2026-05-10.packet.json
 ```
 
 Filename convention: `<sender>-<project>-<date>.packet.json`
@@ -670,7 +670,7 @@ Filename convention: `<sender>-<project>-<date>.packet.json`
 
 ### 10.6 The Flow
 
-1. **User says**: "Share my Blackfin context with Shawn's Scribe"
+1. **User says**: "Share my restaurant context with the operator's Scribe"
 2. **Scribe**:
    - Filters entries to the specified project
    - Strips all behavioral/growth/personal data
@@ -685,14 +685,14 @@ Filename convention: `<sender>-<project>-<date>.packet.json`
 6. **On session start**, receiver's Scribe detects new packets and announces:
 
 ```
-Scribe: New packet from Apollo [blackfin, 2026-05-10]
+Scribe: New packet from Apollo [restaurant, 2026-05-10]
   Sender: Apollo — COO / Project Manager, systems architect
   3 decisions, 1 active work item, 2 learnings, 1 learning story, 1 open question
 
   Apollo asks: "Are you tracking vendor price changes per receipt
   or per catalog update?"
 
-  Type 'scribe accept-packet apollo-blackfin-2026-05-10' to integrate.
+  Type 'scribe accept-packet apollo-restaurant-2026-05-10' to integrate.
 ```
 
 7. **Receiver accepts** — their Claude now understands who the sender is, how they think, what they've decided and why, what work is in flight, how the two should interact, and what transferable lessons apply.
@@ -801,7 +801,7 @@ Users are asked during setup if they want status line integration. Can be added 
 | Command | Purpose |
 |---|---|
 | `scribe list` | Browse entries with filters |
-| `scribe list --project blackfin` | Filter by project |
+| `scribe list --project restaurant` | Filter by project |
 | `scribe list --type correction` | Filter by type |
 | `scribe list --since 2026-04-01` | Filter by date |
 | `scribe list --search "medallion"` | Full-text search |
@@ -812,9 +812,9 @@ Users are asked during setup if they want status line integration. Can be added 
 
 ```
 ID          DATE        PROJECT     TYPE        TITLE
-a1b2c3d4    2026-05-08  blackfin    decision    Adopted medallion architecture
-e5f6g7h8    2026-05-09  blackfin    correction  Missed RLS policy on vendor table
-i9j0k1l2    2026-05-10  naturejab   feature     Shipped asset gallery component
+a1b2c3d4    2026-05-08  restaurant    decision    Adopted medallion architecture
+e5f6g7h8    2026-05-09  restaurant    correction  Missed RLS policy on vendor table
+i9j0k1l2    2026-05-10  nonprofit   feature     Shipped asset gallery component
 ```
 
 Short IDs (first 8 chars), human-readable, sortable.
