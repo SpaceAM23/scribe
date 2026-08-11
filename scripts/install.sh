@@ -14,10 +14,14 @@ set -euo pipefail
 
 # Non-interactive guard: with `set -e`, a `read` that hits EOF (curl | bash, CI,
 # a wrapper script) kills the installer at the first prompt with no message.
-if [[ ! -t 0 ]]; then
+SCRIBE_NONINTERACTIVE="${SCRIBE_NONINTERACTIVE:-0}"
+if [[ ! -t 0 && "${SCRIBE_NONINTERACTIVE}" != "1" ]]; then
   echo "Scribe installer needs an interactive terminal (it asks where your data" >&2
   echo "directory should live). Run it directly:  bash scripts/install.sh" >&2
-  echo "Piping from curl or running headless is not supported yet." >&2
+  echo "" >&2
+  echo "For CI, scripted installs, or curl | bash, run non-interactively:" >&2
+  echo "  SCRIBE_NONINTERACTIVE=1 SCRIBE_DATA_DIR=~/Desktop/Scribe bash scripts/install.sh" >&2
+  echo "That accepts the default answer to every prompt." >&2
   exit 1
 fi
 
@@ -67,8 +71,13 @@ ask() {
     else
         printf "  %s: " "$prompt"
     fi
-    read -r REPLY
-    REPLY="${REPLY:-$default}"
+    if [[ "${SCRIBE_NONINTERACTIVE}" == "1" ]]; then
+        # A required prompt with no default would otherwise loop forever here.
+        REPLY="${default:-${USER:-scribe-user}}"; printf "%s\n" "$REPLY"
+    else
+        read -r REPLY
+        REPLY="${REPLY:-$default}"
+    fi
 }
 
 # Yes/no prompt. Usage: ask_yn "Question" "y" (default yes) or "n"
@@ -83,8 +92,12 @@ ask_yn() {
         hint="y/N"
     fi
     printf "  %s [%s]: " "$prompt" "$hint"
-    read -r REPLY
-    REPLY="${REPLY:-$default}"
+    if [[ "${SCRIBE_NONINTERACTIVE}" == "1" ]]; then
+        REPLY="$default"; printf "%s\n" "$REPLY"
+    else
+        read -r REPLY
+        REPLY="${REPLY:-$default}"
+    fi
     case "$REPLY" in
         [Yy]|[Yy][Ee][Ss]) return 0 ;;
         *) return 1 ;;
@@ -180,7 +193,7 @@ info "the Scribe skill never touch it."
 printf "\n"
 
 DEFAULT_DATA_DIR="${HOME}/Desktop/Scribe"
-ask "Data directory path" "~/Desktop/Scribe"
+ask "Data directory path" "${SCRIBE_DATA_DIR:-~/Desktop/Scribe}"
 DATA_DIR_RAW="${REPLY}"
 DATA_DIR="$(expand_path "${DATA_DIR_RAW}")"
 
@@ -267,7 +280,7 @@ printf "\n"
 ask "Your name (required)" ""
 while [[ -z "${REPLY}" ]]; do
     warn "Name is required."
-    ask "Your name" ""
+    ask "Your name" "${SCRIBE_USER_NAME:-${USER:-scribe-user}}"
 done
 USER_NAME="${REPLY}"
 
@@ -445,7 +458,11 @@ if ask_yn "Enable field-level encryption?" "n"; then
     printf "  %s\n" "${RESET}"
 
     printf "  Press Enter after you have saved the key..."
-    read -r
+    if [[ "${SCRIBE_NONINTERACTIVE}" == "1" ]]; then
+        printf "(non-interactive: continuing)\n"
+    else
+        read -r
+    fi
     success "Encryption: enabled"
 else
     dim "  Encryption: off"
