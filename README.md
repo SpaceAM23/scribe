@@ -85,7 +85,7 @@ When you're ready for feedback, ask naturally:
 Share context between collaborators through trusted handshakes:
 
 ```
-scribe share restaurant --to operator
+/scribe-share restaurant --to operator
 ```
 
 A packet carries four layers of relational intelligence:
@@ -136,7 +136,7 @@ Scribe doesn't just log mistakes — it prevents them from recurring:
   outbox/                      <- Sent packets
 ```
 
-The skill is the engine — replaceable, version-controlled. Your journal is your data — portable, durable, yours. `scribe update` only touches the engine, never your data.
+The skill is the engine — replaceable, version-controlled. Your journal is your data — portable, durable, yours. `/scribe-update` only touches the engine, never your data.
 
 ## Privacy
 

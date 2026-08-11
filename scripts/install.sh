@@ -12,6 +12,16 @@
 
 set -euo pipefail
 
+# Non-interactive guard: with `set -e`, a `read` that hits EOF (curl | bash, CI,
+# a wrapper script) kills the installer at the first prompt with no message.
+if [[ ! -t 0 ]]; then
+  echo "Scribe installer needs an interactive terminal (it asks where your data" >&2
+  echo "directory should live). Run it directly:  bash scripts/install.sh" >&2
+  echo "Piping from curl or running headless is not supported yet." >&2
+  exit 1
+fi
+
+
 # ---------------------------------------------------------------------------
 # Color support (with fallback for terminals that don't support it)
 # ---------------------------------------------------------------------------
@@ -88,6 +98,12 @@ expand_path() {
         p="${HOME}/${p#\~/}"
     elif [[ "$p" == "~" ]]; then
         p="${HOME}"
+    fi
+    # Force absolute. A relative data_path written into pointer.json resolves
+    # against each process's cwd, so the journal splinters into one copy per
+    # directory the writer happens to run from.
+    if [[ "$p" != /* ]]; then
+        p="$(pwd)/$p"
     fi
     echo "$p"
 }
@@ -451,7 +467,7 @@ if ask_yn "Enable Scribe status line metrics?" "y"; then
     success "Status line: enabled"
     printf "\n"
     info "To integrate, add this line to your statusline-command.sh:"
-    dim "  ~/.claude/scribe/adapters/claude-code/statusline-segment.sh"
+    dim "  ~/.claude/scribe/adapters/claude-code/statusline.sh"
 else
     STATUS_LINE=false
     dim "  Status line: off"
@@ -614,6 +630,33 @@ else
         ln -s "${REPO_ROOT}" "${CLAUDE_SCRIBE_DIR}"
         success "Symlink created: ~/.claude/scribe -> ${REPO_ROOT}"
     fi
+fi
+
+# ============================================================================
+# STEP 11b: Install the slash commands
+# ----------------------------------------------------------------------------
+# Without this the installer finishes by telling the user to type /scribe-help,
+# which does not exist — the single most likely reason an install is judged
+# broken. The command files ship in adapters/claude-code/commands/ and were
+# never copied anywhere Claude Code looks.
+# ============================================================================
+CMD_SRC="${REPO_ROOT}/adapters/claude-code/commands"
+CMD_DEST="${HOME}/.claude/commands"
+if [[ -d "${CMD_SRC}" ]]; then
+    mkdir -p "${CMD_DEST}"
+    CMD_COUNT=0
+    for cmd_file in "${CMD_SRC}"/*.md; do
+        [[ -e "${cmd_file}" ]] || continue
+        cp "${cmd_file}" "${CMD_DEST}/"
+        CMD_COUNT=$((CMD_COUNT + 1))
+    done
+    if [[ ${CMD_COUNT} -gt 0 ]]; then
+        success "${CMD_COUNT} slash command(s) installed to ~/.claude/commands/"
+    else
+        warn "No command files found in ${CMD_SRC}"
+    fi
+else
+    warn "Command source missing: ${CMD_SRC} — /scribe-* commands will not be available"
 fi
 
 # ============================================================================
@@ -782,7 +825,13 @@ if [[ ! -f "${INDEX_FILE}" ]]; then
   "entries_by_type": {},
   "entries_by_project": {},
   "tag_cloud": {},
-  "growth_summary": {},
+  "growth_summary": {
+    "total_features": 0,
+    "total_bugs_fixed": 0,
+    "total_learnings": 0,
+    "total_corrections": 0,
+    "skill_distribution": {}
+  },
   "last_updated": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 IEOF

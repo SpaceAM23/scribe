@@ -27,6 +27,16 @@
 
 set -euo pipefail
 
+# Preflight: the whole writer is jq-based. Without this the entry is lost with
+# a bare "jq: command not found" and no Scribe-branded diagnostic — silent loss
+# in any thin-PATH context (cron, launchd, background agents).
+if ! command -v jq >/dev/null 2>&1; then
+  echo "SCRIBE ERROR [writer/preflight]: jq is required but not found on PATH." >&2
+  echo "  Install it (brew install jq) or add it to PATH. Entry NOT written." >&2
+  exit 127
+fi
+
+
 # Pin the locale. The content-hash recipe in section 12c uses `cut -c1-200`,
 # which truncates 200 BYTES under LC_ALL=C (the cron/launchd default) but
 # 200 CHARACTERS under a UTF-8 locale. A byte-truncated hash diverges from
@@ -82,30 +92,41 @@ resolve_data_path() {
     return
   fi
 
-  # 2. pointer.json in the repo root (this script lives in core/)
+  # 2/3. pointer.json — repo root first (this script lives in core/), then the
+  # script dir itself (a skill install may nest core/).
+  #
+  # A pointer that EXISTS but cannot be read is a hard error, never a fallback.
+  # Falling through to the shared default is how two installs on one machine
+  # silently converge on one journal — the failure this resolution order exists
+  # to prevent. "No pointer" and "broken pointer" are different situations.
   local script_dir
   script_dir="$(cd "$(dirname "$0")" && pwd)"
-  local pointer="$script_dir/../pointer.json"
-  if [ -f "$pointer" ]; then
+  local pointer
+  for pointer in "$script_dir/../pointer.json" "$script_dir/pointer.json"; do
+    [ -f "$pointer" ] || continue
     local ptr_path
-    ptr_path=$(jq -r '.data_path // empty' "$pointer" 2>/dev/null || true)
-    if [ -n "$ptr_path" ]; then
-      # Expand ~ to $HOME
-      echo "${ptr_path/#\~/$HOME}"
-      return
+    if ! ptr_path=$(jq -r '.data_path // empty' "$pointer" 2>/dev/null); then
+      echo "SCRIBE ERROR [writer/pointer]: $pointer exists but is not valid JSON." >&2
+      echo "  Refusing to fall back to the shared default (~/Desktop/Scribe), which" >&2
+      echo "  would silently mix this install's journal with another's." >&2
+      echo "  Fix the file or delete it to accept the default. Entry NOT written." >&2
+      exit 78
     fi
-  fi
-
-  # 3. Check script dir itself (skill install may nest core/)
-  local alt_pointer="$script_dir/pointer.json"
-  if [ -f "$alt_pointer" ]; then
-    local alt_path
-    alt_path=$(jq -r '.data_path // empty' "$alt_pointer" 2>/dev/null || true)
-    if [ -n "$alt_path" ]; then
-      echo "${alt_path/#\~/$HOME}"
-      return
+    if [ -z "$ptr_path" ]; then
+      echo "SCRIBE ERROR [writer/pointer]: $pointer has no .data_path value." >&2
+      echo "  Refusing to fall back to the shared default. Entry NOT written." >&2
+      exit 78
     fi
-  fi
+    case "$ptr_path" in
+      "~"*|/*) : ;;
+      *) echo "SCRIBE ERROR [writer/pointer]: .data_path is relative (\"$ptr_path\")." >&2
+         echo "  Relative paths resolve against the current directory, so the journal" >&2
+         echo "  splinters into one copy per working directory. Use an absolute path." >&2
+         exit 78 ;;
+    esac
+    echo "${ptr_path/#\~/$HOME}"
+    return
+  done
 
   # 4. Default
   echo "$HOME/Desktop/Scribe"
