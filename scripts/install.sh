@@ -878,7 +878,7 @@ if ask_yn "Would you like to set up an intake scan?" "n"; then
     dim "  2. Place the export files in:"
     dim "     ${IMPORT_DIR}/"
     dim "  3. Start a Claude Code session and run:"
-    dim "     scribe import"
+    dim "     /scribe-import"
     printf "\n"
     info "Scribe will analyze the exports and present findings for your"
     info "review before saving anything. Nothing is assumed or fabricated."
@@ -965,7 +965,7 @@ printf "\n"
 
 if [[ "${INTAKE_ACTION}" == "ready" ]]; then
     info "4. Drop your chat exports into ${DATA_DIR}/import/"
-    info "   and run: scribe import"
+    info "   and run: /scribe-import"
     printf "\n"
 fi
 
